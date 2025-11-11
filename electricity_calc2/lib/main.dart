@@ -1,10 +1,19 @@
+﻿import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(
+    url: 'https://qzcziazzbyvidawwlnen.supabase.co',
+    anonKey:
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF6Y3ppYXp6Ynl2aWRhd3dsbmVuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1NjUxMzAsImV4cCI6MjA3NzE0MTEzMH0.lheIfO7B9d0a0Qhp5Hgg8jco1g6_Pn1U2EgCcwwddYk',
+  );
   runApp(const GautengElecApp());
 }
 
@@ -16,12 +25,41 @@ class GautengElecApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final baseScheme = ColorScheme.fromSeed(seedColor: Colors.deepOrange);
+    final scheme = baseScheme.copyWith(
+      primary: Colors.deepOrange.shade400,
+      onPrimary: Colors.white,
+      secondary: Colors.amber.shade600,
+      onSecondary: Colors.black87,
+      secondaryContainer: Colors.amber.shade100,
+      tertiary: Colors.orangeAccent.shade100,
+      surface: const Color(0xFFFFF9F0),
+    );
     return MaterialApp(
       title: 'Gauteng Electricity Tracker',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        colorScheme: scheme,
         useMaterial3: true,
+        scaffoldBackgroundColor: scheme.surface,
+        cardTheme: CardThemeData(
+          color: Colors.white,
+          surfaceTintColor: scheme.primary.withValues(alpha: 0.08),
+        ),
+        snackBarTheme: SnackBarThemeData(
+          backgroundColor: scheme.secondary,
+          contentTextStyle: TextStyle(color: scheme.onSecondary),
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            backgroundColor: scheme.primary,
+            foregroundColor: scheme.onPrimary,
+          ),
+        ),
+        appBarTheme: AppBarTheme(
+          backgroundColor: scheme.primary,
+          foregroundColor: scheme.onPrimary,
+        ),
       ),
       home: const Bootstrapper(),
     );
@@ -50,8 +88,8 @@ class _BootstrapperState extends State<Bootstrapper> {
 
   Future<void> _init() async {
     final prefs = await SharedPreferences.getInstance();
-    await TariffManager.ensureTariffs();   // built-in defaults first run
-    await TariffManager.tryAutoUpdate();   // yearly check
+    await TariffManager.ensureTariffs();   // validate cached tariffs
+    await TariffManager.tryAutoUpdate();   // monthly check for remote updates
 
     if (kStartAtLogin) {
       // Clear only the active session (keeps registered users)
@@ -173,6 +211,24 @@ class TransactionRecord {
     required this.expectedKwh,
   });
 
+  TransactionRecord copyWith({
+    String? id,
+    String? regionKey,
+    DateTime? date,
+    double? money,
+    double? actualKwh,
+    double? expectedKwh,
+  }) {
+    return TransactionRecord(
+      id: id ?? this.id,
+      regionKey: regionKey ?? this.regionKey,
+      date: date ?? this.date,
+      money: money ?? this.money,
+      actualKwh: actualKwh ?? this.actualKwh,
+      expectedKwh: expectedKwh ?? this.expectedKwh,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'regionKey': regionKey,
@@ -191,6 +247,25 @@ class TransactionRecord {
         actualKwh: (j['actualKwh'] as num).toDouble(),
         expectedKwh: (j['expectedKwh'] as num).toDouble(),
       );
+
+  factory TransactionRecord.fromSupabase(Map<String, dynamic> row) =>
+      TransactionRecord(
+        id: (row['id'] ?? '').toString(),
+        regionKey: (row['region_key'] as String?) ?? '',
+        date: DateTime.parse(row['purchased_at'] as String),
+        money: (row['amount'] as num).toDouble(),
+        actualKwh: (row['energy_kwh'] as num?)?.toDouble() ?? 0,
+        expectedKwh: (row['expected_kwh'] as num?)?.toDouble() ?? 0,
+      );
+
+  Map<String, dynamic> toSupabaseMap({required String userId}) => {
+        'user_id': userId,
+        'region_key': regionKey,
+        'amount': money,
+        'energy_kwh': actualKwh,
+        'expected_kwh': expectedKwh,
+        'purchased_at': date.toIso8601String(),
+      };
 }
 
 class MonthlySummary {
@@ -232,177 +307,289 @@ class MonthlySummary {
       );
 }
 
+class SupportMessage {
+  final String sender; // 'user' | 'admin'
+  final String body;
+  final DateTime timestamp;
+  final bool readByUser;
+  final bool readByAdmin;
+
+  const SupportMessage({
+    required this.sender,
+    required this.body,
+    required this.timestamp,
+    required this.readByUser,
+    required this.readByAdmin,
+  });
+
+  SupportMessage copyWith({bool? readByUser, bool? readByAdmin}) => SupportMessage(
+        sender: sender,
+        body: body,
+        timestamp: timestamp,
+        readByUser: readByUser ?? this.readByUser,
+        readByAdmin: readByAdmin ?? this.readByAdmin,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'sender': sender,
+        'body': body,
+        'timestamp': timestamp.toIso8601String(),
+        'readByUser': readByUser,
+        'readByAdmin': readByAdmin,
+      };
+
+  factory SupportMessage.fromJson(Map<String, dynamic> json) => SupportMessage(
+        sender: json['sender'] as String,
+        body: json['body'] as String,
+        timestamp: DateTime.parse(json['timestamp'] as String),
+        readByUser: json['readByUser'] == true,
+        readByAdmin: json['readByAdmin'] == true,
+      );
+}
+
+class QueryThread {
+  final String userEmail;
+  final List<SupportMessage> messages;
+
+  const QueryThread({required this.userEmail, required this.messages});
+
+  QueryThread append(SupportMessage message) => QueryThread(
+        userEmail: userEmail,
+        messages: [...messages, message],
+      );
+
+  QueryThread markReadByUser() => QueryThread(
+        userEmail: userEmail,
+        messages: messages
+            .map((m) => m.sender == 'admin' ? m.copyWith(readByUser: true) : m)
+            .toList(),
+      );
+
+  QueryThread markReadByAdmin() => QueryThread(
+        userEmail: userEmail,
+        messages: messages
+            .map((m) => m.sender == 'user' ? m.copyWith(readByAdmin: true) : m)
+            .toList(),
+      );
+
+  int get unreadForUser => messages
+      .where((m) => m.sender == 'admin' && !m.readByUser)
+      .length;
+
+  int get unreadForAdmin => messages
+      .where((m) => m.sender == 'user' && !m.readByAdmin)
+      .length;
+
+  DateTime? get lastTimestamp => messages.isEmpty ? null : messages.last.timestamp;
+
+  Map<String, dynamic> toJson() => {
+        'userEmail': userEmail,
+        'messages': messages.map((m) => m.toJson()).toList(),
+      };
+
+  factory QueryThread.fromJson(Map<String, dynamic> json) => QueryThread(
+        userEmail: json['userEmail'] as String,
+        messages: (json['messages'] as List<dynamic>? ?? [])
+            .map((e) => SupportMessage.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+      );
+}
+
+class QueryStore {
+  static SupabaseClient get _client => Supabase.instance.client;
+
+  static Future<String?> _userIdForEmail(String email) async {
+    return Auth.userIdForEmail(email);
+  }
+
+  static SupportMessage _messageFromRow(Map<String, dynamic> row) {
+    return SupportMessage(
+      sender: (row['sender'] as String?) ?? 'user',
+      body: (row['body'] as String?) ?? '',
+      timestamp: DateTime.parse(row['created_at'] as String),
+      readByUser: row['read_by_user'] == true,
+      readByAdmin: row['read_by_admin'] == true,
+    );
+  }
+
+  static Future<QueryThread> threadFor(String email) async {
+    final canonical = Auth.canonicalEmail(email);
+    final userId = await _userIdForEmail(canonical);
+    if (userId == null) {
+      return QueryThread(userEmail: canonical, messages: const []);
+    }
+    final rows = await _client
+        .from('user_queries')
+        .select()
+        .eq('user_id', userId)
+        .order('created_at', ascending: true);
+    final messages = rows
+        .map((row) => _messageFromRow(Map<String, dynamic>.from(row)))
+        .toList();
+    return QueryThread(userEmail: canonical, messages: messages);
+  }
+
+  static Future<void> addMessage({
+    required String userEmail,
+    required SupportMessage message,
+  }) async {
+    final canonical = Auth.canonicalEmail(userEmail);
+    final userId = await _userIdForEmail(canonical);
+    if (userId == null) return;
+    final isAdmin = message.sender == 'admin';
+    final payload = {
+      'user_id': userId,
+      'subject': message.sender == 'admin' ? 'Admin message' : 'User message',
+      'sender': message.sender,
+      'body': message.body,
+      'created_at': message.timestamp.toIso8601String(),
+      'read_by_user': isAdmin ? false : true,
+      'read_by_admin': isAdmin ? true : false,
+    };
+    try {
+      await _client.from('user_queries').insert(payload);
+    } catch (err) {
+      if (kDebugMode) {
+        debugPrint('Failed to insert query message: $err');
+      }
+    }
+    await RemoteLog.queryMessage(userEmail: canonical, message: message);
+  }
+
+  static Future<void> markReadByUser(String userEmail) async {
+    final canonical = Auth.canonicalEmail(userEmail);
+    final userId = await _userIdForEmail(canonical);
+    if (userId == null) return;
+    try {
+      await _client
+          .from('user_queries')
+          .update({'read_by_user': true})
+          .eq('user_id', userId)
+          .eq('sender', 'admin');
+    } catch (err) {
+      if (kDebugMode) debugPrint('Failed to mark user queries read: $err');
+    }
+  }
+
+  static Future<void> markReadByAdmin(String userEmail) async {
+    final canonical = Auth.canonicalEmail(userEmail);
+    final userId = await _userIdForEmail(canonical);
+    if (userId == null) return;
+    try {
+      await _client
+          .from('user_queries')
+          .update({'read_by_admin': true})
+          .eq('user_id', userId)
+          .eq('sender', 'user');
+    } catch (err) {
+      if (kDebugMode) debugPrint('Failed to mark admin queries read: $err');
+    }
+  }
+
+  static Future<int> unreadForUser(String userEmail) async {
+    final canonical = Auth.canonicalEmail(userEmail);
+    final userId = await _userIdForEmail(canonical);
+    if (userId == null) return 0;
+    final rows = await _client
+        .from('user_queries')
+        .select()
+        .eq('user_id', userId)
+        .eq('sender', 'admin')
+        .eq('read_by_user', false);
+    return rows.length;
+  }
+
+  static Future<int> unreadForAdmin() async {
+    final rows = await _client
+        .from('user_queries')
+        .select()
+        .eq('sender', 'user')
+        .eq('read_by_admin', false);
+    return rows.length;
+  }
+
+  static Future<List<QueryThread>> allSorted() async {
+    final rows = await _client
+        .from('user_queries')
+        .select()
+        .order('created_at', ascending: true);
+    final Map<String, List<SupportMessage>> grouped = {};
+    for (final raw in rows) {
+      final map = Map<String, dynamic>.from(raw);
+      final userId = map['user_id'] as String?;
+      if (userId == null || userId.isEmpty) continue;
+      grouped.putIfAbsent(userId, () => []).add(_messageFromRow(map));
+    }
+    final threads = <QueryThread>[];
+    for (final entry in grouped.entries) {
+      final email = await Auth.emailForUserId(entry.key) ?? entry.key;
+      threads.add(QueryThread(userEmail: email, messages: entry.value));
+    }
+    threads.sort((a, b) {
+      final aTime = a.lastTimestamp ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bTime = b.lastTimestamp ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bTime.compareTo(aTime);
+    });
+    return threads;
+  }
+}
+
 /// =======================================================
-/// TARIFF MANAGER: built-in defaults + yearly fetch
+/// TARIFF MANAGER: cached remote tariffs + monthly fetch
 /// =======================================================
 class TariffManager {
   // TODO: Replace with your hosted JSON (GitHub raw / Firebase / S3)
   static const String tariffsUrl =
-      'https://example.com/gauteng_tariffs.json';
+      'https://damic3.github.io/electricity_calc/tariffs.json';
 
-  // Built-in fallback defaults (illustrative — put confirmed rates here)
-  /* static final List<RegionTariff> _builtInDefaults = [
-    RegionTariff(
-      regionKey: 'tshwane',
-      displayName: 'City of Tshwane',
-      blocks: [
-        TariffBlock(from: 0, to: 100, rate: 2.40),
-        TariffBlock(from: 101, to: 600, rate: 2.90),
-        TariffBlock(from: 601, to: null, rate: 3.50),
-      ],
-    ),
-    RegionTariff(
-      regionKey: 'joburg',
-      displayName: 'City of Johannesburg',
-      blocks: [
-        TariffBlock(from: 0, to: 150, rate: 2.55),
-        TariffBlock(from: 151, to: 600, rate: 3.05),
-        TariffBlock(from: 601, to: null, rate: 3.70),
-      ],
-    ),
-    RegionTariff(
-      regionKey: 'ekurhuleni',
-      displayName: 'Ekurhuleni',
-      blocks: [
-        TariffBlock(from: 0, to: 100, rate: 2.50),
-        TariffBlock(from: 101, to: 600, rate: 3.00),
-        TariffBlock(from: 601, to: null, rate: 3.60),
-      ],
-    ),
-  ];
-
-  // Updated built-in defaults (VAT-inclusive) — Sep 2025 (FY 2025/26)
-  // Includes Ekurhuleni Tariff B (Flat) as a separate selectable region.
-  */
-  static final List<RegionTariff> _builtInDefaultsV2 = [
-    RegionTariff(
-      regionKey: 'tshwane',
-      displayName: 'City of Tshwane — Residential IBT',
-      blocks: const [
-        TariffBlock(from: 1, to: 100, rate: 3.4259),
-        TariffBlock(from: 101, to: 400, rate: 4.0094),
-        TariffBlock(from: 401, to: 650, rate: 4.3682),
-        TariffBlock(from: 651, to: null, rate: 4.7090),
-      ],
-      startDate: DateTime(2025, 7, 1),
-      endDate: null,
-    ),
-    RegionTariff(
-      regionKey: 'joburg',
-      displayName: 'City of Johannesburg — Prepaid High',
-      blocks: const [
-        TariffBlock(from: 1, to: 350, rate: 2.7179),
-        TariffBlock(from: 351, to: 500, rate: 3.1176),
-        TariffBlock(from: 501, to: null, rate: 3.5525),
-      ],
-      startDate: DateTime(2025, 7, 1),
-      endDate: null,
-    ),
-    RegionTariff(
-      regionKey: 'ekurhuleni',
-      displayName: 'Ekurhuleni — Tariff A (IBT, Non‑Indigent)',
-      blocks: const [
-        TariffBlock(from: 1, to: 50, rate: 3.2530),
-        TariffBlock(from: 51, to: 600, rate: 3.2530),
-        TariffBlock(from: 601, to: 700, rate: 5.0809),
-        TariffBlock(from: 701, to: null, rate: 13.1558),
-      ],
-      startDate: DateTime(2025, 7, 1),
-      endDate: null,
-    ),
-    RegionTariff(
-      regionKey: 'ekurhuleni_flat',
-      displayName: 'Ekurhuleni — Tariff B (Flat)',
-      blocks: const [
-        TariffBlock(from: 1, to: null, rate: 4.2142),
-      ],
-      startDate: DateTime(2025, 7, 1),
-      endDate: null,
-    ),
-  ];
-
+  /// Validate cached tariffs and clear them if they look malformed.
   static Future<void> ensureTariffs() async {
     final prefs = await SharedPreferences.getInstance();
-    final nowYear = DateTime.now().year;
-    bool wrote = false;
-
-    if (!prefs.containsKey('tariffs_json')) {
-      final jsonStr = jsonEncode({
-        'versionYear': nowYear,
-        'regions': _builtInDefaultsV2.map((r) => r.toJson()).toList(),
-      });
-      await prefs.setString('tariffs_json', jsonStr);
-      await prefs.setInt('tariffs_updated_year', nowYear);
-      await prefs.setString('tariffs_updated_at', DateTime.now().toIso8601String());
-      wrote = true;
-    } else {
-      // Migrate old cached tariffs to Sep 2025 defaults if they look outdated.
-      try {
-        final raw = prefs.getString('tariffs_json');
-        final data = jsonDecode(raw!) as Map<String, dynamic>;
-        final version = (data['versionYear'] is int) ? data['versionYear'] as int : 0;
-        bool outdated = version < 2025;
-        if (!outdated && data['regions'] is List) {
-          try {
-            final regions = (data['regions'] as List).cast<dynamic>();
-            final tshwane = regions.firstWhere((e) => (e is Map && e['regionKey'] == 'tshwane')) as Map?;
-            if (tshwane != null && tshwane['blocks'] is List && (tshwane['blocks'] as List).isNotEmpty) {
-              final first = (tshwane['blocks'] as List).first as Map;
-              final rate = (first['rate'] as num?)?.toDouble() ?? 0.0;
-              // Old seed had 2.40; anything < 3.0 indicates old data
-              if (rate < 3.0) outdated = true;
-            }
-          } catch (_) {}
-        }
-        if (outdated) {
-          final jsonStr = jsonEncode({
-            'versionYear': nowYear,
-            'regions': _builtInDefaultsV2.map((r) => r.toJson()).toList(),
-          });
-          await prefs.setString('tariffs_json', jsonStr);
-          await prefs.setInt('tariffs_updated_year', nowYear);
-          await prefs.setString('tariffs_updated_at', DateTime.now().toIso8601String());
-          wrote = true;
-        }
-      } catch (_) {
-        // If parsing fails, reseed with built-ins
-        final jsonStr = jsonEncode({
-          'versionYear': nowYear,
-          'regions': _builtInDefaultsV2.map((r) => r.toJson()).toList(),
-        });
-        await prefs.setString('tariffs_json', jsonStr);
-        await prefs.setInt('tariffs_updated_year', nowYear);
-        await prefs.setString('tariffs_updated_at', DateTime.now().toIso8601String());
-        wrote = true;
+    final cached = prefs.getString('tariffs_json');
+    if (cached == null) return;
+    try {
+      final data = jsonDecode(cached);
+      if (data is! Map<String, dynamic>) {
+        await clearTariffs();
+        return;
       }
-    }
-
-    if (wrote) {
-      // No-op: place to hook metrics/log if needed
+      if (data['regions'] is! List) {
+        await clearTariffs();
+        return;
+      }
+    } catch (_) {
+      await clearTariffs();
     }
   }
 
+  // Latest effective tariff per region (deduplicated by regionKey)
   static Future<List<RegionTariff>> loadTariffs() async {
     final prefs = await SharedPreferences.getInstance();
     final s = prefs.getString('tariffs_json');
-    final all = s == null
-        ? _builtInDefaultsV2
-        : ((jsonDecode(s) as Map<String, dynamic>)['regions'] as List)
+    if (s == null) return [];
+    try {
+      final data = jsonDecode(s);
+      if (data is Map<String, dynamic> && data['regions'] is List) {
+        final parsed = (data['regions'] as List)
             .map((e) => RegionTariff.fromJson(e))
             .toList();
-    // Deduplicate by regionKey to latest startDate for UI selection
-    final Map<String, RegionTariff> latest = {};
-    for (final r in all) {
-      final prev = latest[r.regionKey];
-      if (prev == null || r.startDate.isAfter(prev.startDate)) {
-        latest[r.regionKey] = r;
+        final Map<String, RegionTariff> latest = {};
+        for (final r in parsed) {
+          final prev = latest[r.regionKey];
+          if (prev == null || r.startDate.isAfter(prev.startDate)) {
+            latest[r.regionKey] = r;
+          }
+        }
+        return latest.values.toList();
       }
+    } catch (_) {
+      // ignore malformed cached tariffs
     }
-    return latest.values.toList();
+    return [];
   }
 
   // For now both residential and commercial return the same list until
-  // distinct commercial blocks are supplied.
+  // distinct commercial blocks are supplied remotely.
   static Future<List<RegionTariff>> loadTariffsForType(String customerType) async {
     return loadTariffs();
   }
@@ -411,51 +598,72 @@ class TariffManager {
   static Future<List<RegionTariff>> loadTariffsAll() async {
     final prefs = await SharedPreferences.getInstance();
     final s = prefs.getString('tariffs_json');
-    if (s == null) return _builtInDefaultsV2;
-    final data = jsonDecode(s) as Map<String, dynamic>;
-    return (data['regions'] as List).map((e) => RegionTariff.fromJson(e)).toList();
+    if (s == null) return [];
+    try {
+      final data = jsonDecode(s);
+      if (data is Map<String, dynamic> && data['regions'] is List) {
+        return (data['regions'] as List)
+            .map((e) => RegionTariff.fromJson(e))
+            .toList();
+      }
+    } catch (_) {
+      // ignore malformed cached tariffs
+    }
+    return [];
   }
 
-  /// Reset stored tariffs to the built-in Sep 2025 set.
-  static Future<void> resetToBuiltins() async {
+  /// Clear any cached tariff data. Use once remote data is updated.
+  static Future<void> clearTariffs() async {
     final prefs = await SharedPreferences.getInstance();
-    final nowYear = DateTime.now().year;
-    final jsonStr = jsonEncode({
-      'versionYear': nowYear,
-      'regions': _builtInDefaultsV2.map((r) => r.toJson()).toList(),
-    });
-    await prefs.setString('tariffs_json', jsonStr);
-    await prefs.setInt('tariffs_updated_year', nowYear);
-    await prefs.setString('tariffs_updated_at', DateTime.now().toIso8601String());
+    await prefs.remove('tariffs_json');
+    await prefs.remove('tariffs_updated_year');
+    await prefs.remove('tariffs_updated_at');
+    await prefs.remove('tariffs_checked_month');
   }
 
-  /// Once/year auto update (on first run in a calendar year).
-  static Future<void> tryAutoUpdate() async {
+  /// Auto update (once per calendar month, or if no cached tariffs exist).
+  static Future<void> tryAutoUpdate({bool force = false}) async {
     final prefs = await SharedPreferences.getInstance();
-    final lastYear = prefs.getInt('tariffs_updated_year');
-    final nowYear = DateTime.now().year;
+    final cached = prefs.getString('tariffs_json');
+    final bool hasCachedTariffs = cached != null;
 
-    if (lastYear != null && lastYear == nowYear) return;
+    final now = DateTime.now();
+    final nowMonth = DateFormat('yyyy-MM').format(now);
+    final lastCheckedMonth = prefs.getString('tariffs_checked_month');
 
+    if (!force && hasCachedTariffs && lastCheckedMonth == nowMonth) {
+      return;
+    }
+
+    bool updated = false;
     try {
       final res = await http
           .get(Uri.parse(tariffsUrl))
           .timeout(const Duration(seconds: 8));
       if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
+        final dynamic data = jsonDecode(res.body);
         if (data is Map && data['regions'] is List) {
           await prefs.setString('tariffs_json', res.body);
-          await prefs.setInt(
-              'tariffs_updated_year', (data['versionYear'] ?? nowYear) as int);
+          final versionYear = data['versionYear'];
+          if (versionYear is int) {
+            await prefs.setInt('tariffs_updated_year', versionYear);
+          } else {
+            await prefs.remove('tariffs_updated_year');
+          }
           await prefs.setString(
               'tariffs_updated_at', DateTime.now().toIso8601String());
-          return;
+          updated = true;
         }
       }
     } catch (_) {
-      // swallow -> keep cached/builtin
+      // swallow -> keep cached data or try again later
     }
-    await prefs.setInt('tariffs_updated_year', nowYear);
+
+    if (updated || hasCachedTariffs) {
+      await prefs.setString('tariffs_checked_month', nowMonth);
+    } else {
+      await prefs.remove('tariffs_checked_month');
+    }
   }
 
   static RegionTariff? findRegion(List<RegionTariff> regions, String key) {
@@ -482,22 +690,194 @@ class TariffManager {
 }
 
 /// =======================================================
-/// AUTH (local only)
+/// AUTH (Supabase-backed)
 /// =======================================================
 class Auth {
-  static const _usersKey = 'users_json';
+  static const _usersTable = 'app_users';
   static const _activeKey = 'active_email';
   static const _activeRegionSessionKey = 'active_region_key';
+  static const _activeUserIdKey = 'active_user_id';
+  static const _lastLoginEmailKey = 'last_login_email';
+  static const _lastLoginPasswordKey = 'last_login_password';
+  static const _customerTypePrefPrefix = 'customer_type_local__';
+  static const _passwordPrefPrefix = 'password_local__';
+  static const _syntheticDomain = 'app.local';
 
-  static Future<Map<String, dynamic>> _loadUsers() async {
-    final prefs = await SharedPreferences.getInstance();
-    final s = prefs.getString(_usersKey);
-    return s == null ? {} : jsonDecode(s);
+  static const String _adminEmail = 'mic';
+
+  static bool _adminActive = false;
+  static bool _adminEditMode = false;
+  static String? _adminImpersonatingEmail;
+  static String? _adminImpersonatingUserId;
+  static String? _activeUserId;
+  static int _sessionGeneration = 0;
+
+  static SupabaseClient get _client => Supabase.instance.client;
+  static GoTrueClient get _auth => _client.auth;
+
+  static String _canonicalEmail(String raw) => raw.trim().toLowerCase();
+  static String canonicalEmail(String raw) => _canonicalEmail(raw);
+
+  static int get sessionGeneration => _sessionGeneration;
+  static bool get isAdminActive => _adminActive;
+  static bool get isAdminViewing => _adminActive && _adminImpersonatingEmail != null;
+  static bool get adminEditMode => _adminEditMode;
+  static String? get adminImpersonatingEmail => _adminImpersonatingEmail;
+  static bool get canModifyData => !_adminActive || _adminEditMode;
+
+  static void _bumpSession() {
+    _sessionGeneration++;
   }
 
-  static Future<void> _saveUsers(Map<String, dynamic> m) async {
+  static String _normalizeLoginEmail(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.contains('@')) return trimmed.toLowerCase();
+    return '${trimmed.toLowerCase()}@$_syntheticDomain';
+  }
+
+  static Map<String, dynamic> _normalizeRow(dynamic row) {
+    if (row is Map<String, dynamic>) return row;
+    return Map<String, dynamic>.from(row as Map);
+  }
+
+  static Future<Map<String, dynamic>?> _fetchUser(String email) async {
+    try {
+      final canonical = _canonicalEmail(email);
+      final result = await _client
+          .from(_usersTable)
+          .select()
+          .eq('email', canonical)
+          .maybeSingle();
+      if (result == null) return null;
+      return _normalizeRow(result);
+    } on PostgrestException catch (err) {
+      debugPrint('Supabase fetch user failed: ${err.code} ${err.message}');
+      return null;
+    } catch (err) {
+      debugPrint('Unknown fetch user error: $err');
+      return null;
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> _fetchAllUsers() async {
+    final List<dynamic> result = await _client.from(_usersTable).select();
+    return result.map(_normalizeRow).toList();
+  }
+
+  static bool _isAdminRow(Map<String, dynamic>? row) {
+    if (row == null) return false;
+    final value = row['is_admin'];
+    if (value is bool) return value;
+    if (value is int) return value != 0;
+    return false;
+  }
+
+  static String? _remoteCustomerType(Map<String, dynamic>? row) {
+    if (row == null) return null;
+    final value = row['customer_type'] ?? row['customerType'];
+    if (value is String && value.isNotEmpty) return value;
+    return null;
+  }
+
+  static String _customerTypePrefKey(String email) =>
+      '$_customerTypePrefPrefix${_canonicalEmail(email)}';
+  static String _passwordPrefKey(String email) =>
+      '$_passwordPrefPrefix${_canonicalEmail(email)}';
+
+  static Future<void> _cacheCustomerType(String email, String type) async {
+    final canonical = _canonicalEmail(email);
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_usersKey, jsonEncode(m));
+    await prefs.setString(_customerTypePrefKey(canonical), type);
+  }
+
+  static Future<String?> _cachedCustomerType(String email) async {
+    final canonical = _canonicalEmail(email);
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_customerTypePrefKey(canonical));
+  }
+
+  static Future<bool> _tryUpdateUser(String email, Map<String, dynamic> values) async {
+    if (values.isEmpty) return true;
+    final canonical = _canonicalEmail(email);
+    if (values.containsKey('email')) {
+      values['email'] = canonical;
+    }
+    try {
+      await _client.from(_usersTable).update(values).eq('email', canonical);
+      return true;
+    } on PostgrestException catch (err) {
+      debugPrint('Supabase update user failed: ${err.code} ${err.message}');
+      if (err.code == '42703') {
+        final fallback = Map<String, dynamic>.from(values)
+          ..remove('customer_type')
+          ..remove('password');
+        if (fallback.isEmpty || mapEquals(fallback, values)) return false;
+        try {
+          await _client.from(_usersTable).update(fallback).eq('email', canonical);
+          return true;
+        } catch (error) {
+          debugPrint('Supabase update fallback failed for $email: $error');
+          return false;
+        }
+      }
+      return false;
+    } catch (error) {
+      debugPrint('Unknown update user error for $email: $error');
+      return false;
+    }
+  }
+
+  static Future<bool> _tryInsertUser(Map<String, dynamic> values) async {
+    final payload = Map<String, dynamic>.from(values);
+    final emailValue = payload['email'];
+    if (emailValue is String) {
+      payload['email'] = _canonicalEmail(emailValue);
+    }
+    try {
+      await _client.from(_usersTable).insert(payload);
+      return true;
+    } on PostgrestException catch (err) {
+      debugPrint('Supabase insert user failed: ${err.code} ${err.message}');
+      if (err.code == '42703') {
+        final fallback = Map<String, dynamic>.from(payload)
+          ..remove('customer_type')
+          ..remove('password');
+        if (fallback.isEmpty || mapEquals(fallback, values)) return false;
+        try {
+          await _client.from(_usersTable).insert(fallback);
+          return true;
+        } catch (error) {
+          debugPrint('Supabase insert fallback failed for values $fallback: $error');
+          return false;
+        }
+      }
+      return false;
+    } catch (error) {
+      debugPrint('Unknown insert user error: $error');
+      return false;
+    }
+  }
+
+  static Future<void> _setActiveSession(
+    String email, {
+    required bool isAdmin,
+    required String userId,
+    String? password,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_activeKey, email);
+    await prefs.setString(_lastLoginEmailKey, email);
+    if (password != null && password.isNotEmpty) {
+      await prefs.setString(_lastLoginPasswordKey, password);
+      await prefs.setString(_passwordPrefKey(email), password);
+    }
+    await prefs.setString(_activeUserIdKey, userId);
+    _activeUserId = userId;
+    _adminActive = isAdmin;
+    _adminEditMode = false;
+    _adminImpersonatingEmail = null;
+    _adminImpersonatingUserId = null;
+    _bumpSession();
   }
 
   static Future<bool> register({
@@ -506,62 +886,236 @@ class Auth {
     required String regionKey,
     required String customerType,
   }) async {
-    final users = await _loadUsers();
-    if (users.containsKey(email)) return false;
-    users[email] = {
-      'password': password,
-      'regionKey': regionKey,
-      'customerType': customerType,
-    };
-    await _saveUsers(users);
-    return true;
+    final canonical = _canonicalEmail(email);
+    final loginEmail = _normalizeLoginEmail(email);
+    if (canonical == _adminEmail) return false;
+    try {
+      final response = await _auth.signUp(email: loginEmail, password: password);
+      final user = response.user;
+      if (user == null) return false;
+      final payload = <String, dynamic>{
+        'email': canonical,
+        'password': password,
+        'user_id': user.id,
+        'region_key': regionKey,
+        'customer_type': customerType,
+        'is_admin': false,
+      };
+      final inserted = await _tryInsertUser(payload);
+      if (!inserted) {
+        await _tryUpdateUser(canonical, {
+          'password': password,
+          'user_id': user.id,
+          'region_key': regionKey,
+          'customer_type': customerType,
+        });
+      }
+      await _cacheCustomerType(canonical, customerType);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_passwordPrefKey(canonical), password);
+      await _auth.signOut();
+      return true;
+    } on AuthException catch (_) {
+      return false;
+    } catch (_) {
+      return false;
+    }
   }
 
   static Future<bool> login({
     required String email,
     required String password,
   }) async {
-    final users = await _loadUsers();
-    if (!users.containsKey(email)) return false;
-    if (users[email]['password'] != password) return false;
+    final canonical = _canonicalEmail(email);
+    final loginEmail = _normalizeLoginEmail(email);
+    try {
+      final response = await _auth.signInWithPassword(email: loginEmail, password: password);
+      final user = response.user;
+      if (user == null) return false;
+
+      Map<String, dynamic>? row = await _fetchUser(canonical);
+      if (row == null) {
+        final inserted = await _tryInsertUser({
+          'email': canonical,
+          'password': password,
+          'user_id': user.id,
+          'region_key': null,
+          'customer_type': 'residential',
+          'is_admin': false,
+        });
+        if (inserted) {
+          row = await _fetchUser(canonical);
+        }
+      } else if ((row['user_id'] == null) ||
+          (row['user_id'] is String && (row['user_id'] as String).isEmpty)) {
+        await _tryUpdateUser(canonical, {'user_id': user.id});
+        row = await _fetchUser(canonical);
+      }
+      await _tryUpdateUser(canonical, {'password': password});
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_passwordPrefKey(canonical), password);
+
+      final isAdmin = _isAdminRow(row);
+      await _setActiveSession(canonical,
+          password: password, isAdmin: isAdmin, userId: user.id);
+
+      final region = row?['region_key'];
+      if (region is String && region.isNotEmpty) {
+        await setActiveRegionKey(region);
+      } else if (!isAdmin) {
+        final savedRegion = await regionFor(canonical);
+        if (savedRegion != null) {
+          await setActiveRegionKey(savedRegion);
+        }
+      }
+
+      final remoteCustomerType = _remoteCustomerType(row);
+      if (remoteCustomerType != null) {
+        await _cacheCustomerType(canonical, remoteCustomerType);
+      }
+
+      return true;
+    } on AuthException catch (_) {
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> loginWithPreviousDetails() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_activeKey, email);
-    return true;
+    final lastEmail = prefs.getString(_lastLoginEmailKey);
+    final lastPassword = prefs.getString(_lastLoginPasswordKey);
+    if (lastEmail == null ||
+        lastEmail.isEmpty ||
+        lastPassword == null ||
+        lastPassword.isEmpty) {
+      return false;
+    }
+    return login(email: lastEmail, password: lastPassword);
   }
 
   static Future<void> logout() async {
+    try {
+      await _auth.signOut();
+    } catch (_) {
+      // Ignore auth sign-out errors; we'll still clear local state.
+    }
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_activeKey);
     await prefs.remove(_activeRegionSessionKey);
+    await prefs.remove(_activeUserIdKey);
+    _adminActive = false;
+    _adminEditMode = false;
+    _adminImpersonatingEmail = null;
+    _adminImpersonatingUserId = null;
+    _activeUserId = null;
+    _bumpSession();
   }
 
   static Future<bool> changePassword({
     required String email,
+    required String currentPassword,
     required String newPassword,
   }) async {
-    final users = await _loadUsers();
-    if (!users.containsKey(email)) return false;
-    users[email]['password'] = newPassword;
-    await _saveUsers(users);
-    return true;
+    final canonical = _canonicalEmail(email);
+    final loginEmail = _normalizeLoginEmail(email);
+    try {
+      final signInResponse =
+          await _auth.signInWithPassword(email: loginEmail, password: currentPassword);
+      final user = signInResponse.user;
+      if (user == null) return false;
+      await _auth.updateUser(UserAttributes(password: newPassword));
+      await _tryUpdateUser(canonical, {'password': newPassword});
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_lastLoginPasswordKey, newPassword);
+      await prefs.setString(_passwordPrefKey(canonical), newPassword);
+      await _auth.signOut();
+      return true;
+    } on AuthException catch (_) {
+      return false;
+    } catch (_) {
+      return false;
+    }
   }
 
   static Future<String?> activeEmail() async {
+    if (_adminActive && _adminImpersonatingEmail != null) {
+      return _adminImpersonatingEmail;
+    }
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_activeKey);
+    final stored = prefs.getString(_activeKey);
+    if (_adminActive) {
+      return stored ?? _adminEmail;
+    }
+    return stored;
+  }
+
+  static Future<String?> activeUserId() async {
+    if (_adminActive && _adminImpersonatingEmail != null) {
+      if (_adminImpersonatingUserId != null && _adminImpersonatingUserId!.isNotEmpty) {
+        return _adminImpersonatingUserId;
+      }
+      final row = await _fetchUser(_adminImpersonatingEmail!);
+      final uid = row?['user_id'] as String?;
+      _adminImpersonatingUserId = uid;
+      return uid;
+    }
+    if (_activeUserId != null && _activeUserId!.isNotEmpty) {
+      return _activeUserId;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    final stored = prefs.getString(_activeUserIdKey);
+    _activeUserId = stored;
+    return stored;
+  }
+
+  static Future<String?> actorUserId() async {
+    if (_adminActive && _adminImpersonatingEmail != null) {
+      if (_activeUserId != null && _activeUserId!.isNotEmpty) return _activeUserId;
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getString(_activeUserIdKey);
+      _activeUserId = stored;
+      return stored;
+    }
+    return activeUserId();
+  }
+
+  static Future<String?> userIdForEmail(String email) async {
+    final row = await _fetchUser(email);
+    final uid = row?['user_id'];
+    if (uid is String && uid.isNotEmpty) return uid;
+    return null;
+  }
+
+  static Future<String?> emailForUserId(String userId) async {
+    final rows = await _fetchAllUsers();
+    for (final row in rows) {
+      final uid = row['user_id'];
+      if (uid is String && uid.isNotEmpty && uid == userId) {
+        final email = row['email'];
+        if (email is String && email.isNotEmpty) {
+          return email;
+        }
+      }
+    }
+    return null;
   }
 
   static Future<String?> regionFor(String email) async {
-    final users = await _loadUsers();
-    if (!users.containsKey(email)) return null;
-    return users[email]['regionKey'] as String?;
+    final row = await _fetchUser(email);
+    final region = row?['region_key'];
+    if (region is String && region.isNotEmpty) return region;
+    return null;
   }
 
   static Future<void> setRegion(String email, String regionKey) async {
-    final users = await _loadUsers();
-    if (!users.containsKey(email)) return;
-    users[email]['regionKey'] = regionKey;
-    await _saveUsers(users);
+    final canonical = _canonicalEmail(email);
+    if (_adminActive && !_adminEditMode && canonical != _adminEmail) return;
+    final ok = await _tryUpdateUser(canonical, {'region_key': regionKey});
+    if (ok && (_adminImpersonatingEmail == canonical || !isAdminActive)) {
+      await setActiveRegionKey(regionKey);
+    }
   }
 
   // Session-scoped active region (chosen at sign-in)
@@ -576,17 +1130,85 @@ class Auth {
   }
 
   static Future<String> customerTypeFor(String email) async {
-    final users = await _loadUsers();
-    if (!users.containsKey(email)) return 'residential';
-    final v = users[email]['customerType'];
-    return (v is String && v.isNotEmpty) ? v : 'residential';
+    final row = await _fetchUser(email);
+    final remote = _remoteCustomerType(row);
+    if (remote != null) {
+      await _cacheCustomerType(email, remote);
+      return remote;
+    }
+    final cached = await _cachedCustomerType(email);
+    return cached ?? 'residential';
   }
 
   static Future<void> setCustomerType(String email, String type) async {
-    final users = await _loadUsers();
-    if (!users.containsKey(email)) return;
-    users[email]['customerType'] = type;
-    await _saveUsers(users);
+    final canonical = _canonicalEmail(email);
+    if (_adminActive && !_adminEditMode && canonical != _adminEmail) return;
+    await _cacheCustomerType(canonical, type);
+    await _tryUpdateUser(canonical, {'customer_type': type});
+  }
+
+  static Future<String?> storedPassword(String email) async {
+    try {
+      final row = await _fetchUser(email);
+      final password = row?['password'];
+      if (password is String && password.isNotEmpty) {
+        return password;
+      }
+    } catch (_) {
+      // ignore
+    }
+    final prefs = await SharedPreferences.getInstance();
+    final cached = prefs.getString(_passwordPrefKey(email));
+    if (cached != null && cached.isNotEmpty) return cached;
+    return null;
+  }
+
+  static Future<Map<String, dynamic>> allUsers() async {
+    final rows = await _fetchAllUsers();
+    final prefs = await SharedPreferences.getInstance();
+    final map = <String, dynamic>{};
+    for (final row in rows) {
+      final email = row['email'];
+      if (email is! String || email.isEmpty) continue;
+      final customerType =
+          _remoteCustomerType(row) ?? prefs.getString(_customerTypePrefKey(email)) ?? 'residential';
+      map[email] = {
+        'regionKey': row['region_key'] as String?,
+        'customerType': customerType,
+        'userId': row['user_id'] as String?,
+      };
+    }
+    return map;
+  }
+
+  static Future<void> setAdminImpersonation(String? email) async {
+    if (!_adminActive) return;
+    final canonical = email == null ? null : _canonicalEmail(email);
+    _adminImpersonatingEmail = canonical;
+    _adminEditMode = false;
+    final prefs = await SharedPreferences.getInstance();
+    if (canonical == null) {
+      await prefs.remove(_activeRegionSessionKey);
+      _adminImpersonatingUserId = null;
+    } else {
+      final row = await _fetchUser(canonical);
+      final regionValue = row?['region_key'];
+      _adminImpersonatingUserId = row?['user_id'] as String?;
+      if (regionValue is String && regionValue.isNotEmpty) {
+        await prefs.setString(_activeRegionSessionKey, regionValue);
+      } else {
+        await prefs.remove(_activeRegionSessionKey);
+      }
+    }
+    _bumpSession();
+  }
+
+  static void setAdminEditMode(bool enabled) {
+    if (!_adminActive) return;
+    final newValue = enabled && _adminImpersonatingEmail != null;
+    if (newValue == _adminEditMode) return;
+    _adminEditMode = newValue;
+    _bumpSession();
   }
 }
 
@@ -594,95 +1216,141 @@ class Auth {
 /// STORAGE (SharedPreferences)
 /// =======================================================
 class Store {
-  static const _txKeyBase = 'transactions_json';
-  static const _monthsKeyBase = 'months_set_json';
-
-  // Build a per-user SharedPreferences key using the active email.
-  static Future<String> _scopedKey(String base) async {
-    final email = await Auth.activeEmail();
-    final id = (email ?? 'guest').toLowerCase();
-    return '${base}__${id}';
-  }
+  static SupabaseClient get _client => Supabase.instance.client;
 
   static String monthKeyOf(DateTime d) => DateFormat('yyyy-MM').format(d);
 
   static Future<List<TransactionRecord>> loadTransactions() async {
-    final prefs = await SharedPreferences.getInstance();
-    final txKey = await _scopedKey(_txKeyBase);
-    final s = prefs.getString(txKey);
-    if (s == null) return [];
-    final list = (jsonDecode(s) as List)
-        .map((e) => TransactionRecord.fromJson(e))
+    final userId = await Auth.activeUserId();
+    if (userId == null) return [];
+    final rows = await _client
+        .from('transactions')
+        .select()
+        .eq('user_id', userId)
+        .order('purchased_at', ascending: true);
+    final raw = rows
+        .map((e) => TransactionRecord.fromSupabase(Map<String, dynamic>.from(e)))
         .toList();
-    list.sort((a, b) => b.date.compareTo(a.date));
-    return list.take(20).toList(); // keep last 20
+    final computed = await _applyExpected(raw);
+    computed.sort((a, b) => b.date.compareTo(a.date));
+    return computed;
   }
 
-  static Future<void> saveTransactions(List<TransactionRecord> tx) async {
-    tx.sort((a, b) => b.date.compareTo(a.date));
-    final capped = tx.take(20).toList();
-    final prefs = await SharedPreferences.getInstance();
-    final txKey = await _scopedKey(_txKeyBase);
-    await prefs.setString(
-      txKey,
-      jsonEncode(capped.map((e) => e.toJson()).toList()),
-    );
+  static Future<List<TransactionRecord>> fetchRawTransactions() async {
+    final userId = await Auth.activeUserId();
+    if (userId == null) return [];
+    final rows = await _client
+        .from('transactions')
+        .select()
+        .eq('user_id', userId)
+        .order('purchased_at', ascending: true);
+    return rows
+        .map((e) => TransactionRecord.fromSupabase(Map<String, dynamic>.from(e)))
+        .toList();
   }
 
-  static Future<Set<String>> _loadMonthSet() async {
-    final prefs = await SharedPreferences.getInstance();
-    final monthsKey = await _scopedKey(_monthsKeyBase);
-    final s = prefs.getString(monthsKey);
-    if (s == null) return {};
-    return (jsonDecode(s) as List).map((e) => e.toString()).toSet();
+  static Future<List<TransactionRecord>> _applyExpected(
+      List<TransactionRecord> ascending) async {
+    if (ascending.isEmpty) return [];
+    final email = await Auth.activeEmail();
+    final customerType =
+        email == null ? 'residential' : await Auth.customerTypeFor(email);
+    final regions = await TariffManager.loadTariffsForType(customerType);
+    final allRegions = await TariffManager.loadTariffsAll();
+    final Map<String, double> monthCursor = {};
+    final List<TransactionRecord> out = [];
+    for (final tx in ascending) {
+      final monthKey = monthKeyOf(tx.date);
+      final key = '${tx.regionKey}__$monthKey';
+      final cursor = monthCursor[key] ?? 0.0;
+      final region = TariffManager.findRegionForDate(allRegions, tx.regionKey, tx.date) ??
+          TariffManager.findRegion(regions, tx.regionKey);
+      final expected = region == null
+          ? tx.actualKwh
+          : Calc.expectedKwhFromMoneyAt(tx.money, region.blocks, cursor);
+      monthCursor[key] = cursor + expected;
+      out.add(tx.copyWith(expectedKwh: expected));
+    }
+    return out;
   }
 
-  static Future<void> _saveMonthSet(Set<String> set) async {
-    final prefs = await SharedPreferences.getInstance();
-    final list = set.toList()..sort(); // ascending
-    final keep = list.length <= 5 ? list : list.sublist(list.length - 5);
-    final monthsKey = await _scopedKey(_monthsKeyBase);
-    await prefs.setString(monthsKey, jsonEncode(keep));
+  static Future<void> updateTransactions(List<TransactionRecord> updates) async {
+    if (updates.isEmpty) return;
+    for (final tx in updates) {
+      if (tx.id.isEmpty) continue;
+      try {
+        await _client.from('transactions').update({
+          'amount': tx.money,
+          'energy_kwh': tx.actualKwh,
+          'expected_kwh': tx.expectedKwh,
+          'region_key': tx.regionKey,
+          'purchased_at': tx.date.toIso8601String(),
+        }).eq('id', tx.id);
+      } catch (err) {
+        if (kDebugMode) debugPrint('Failed to update txn ${tx.id}: $err');
+      }
+    }
   }
 
-  static Future<void> includeMonth(String monthKey) async {
-    final set = await _loadMonthSet();
-    set.add(monthKey);
-    await _saveMonthSet(set);
-  }
-
-  static Future<List<String>> loadMonthsDesc() async {
-    final set = await _loadMonthSet();
-    var list = set.toList();
-    list.sort(); // asc
-    list = list.reversed.toList(); // desc
-    return list;
+  static Future<TransactionRecord> insertTransaction(TransactionRecord tx) async {
+    final userId = await Auth.activeUserId();
+    if (userId == null) {
+      throw StateError('No active user to insert transaction');
+    }
+    final payload = tx.toSupabaseMap(userId: userId);
+    final inserted = await _client
+        .from('transactions')
+        .insert(payload)
+        .select()
+        .maybeSingle();
+    if (inserted == null) return tx;
+    return TransactionRecord.fromSupabase(Map<String, dynamic>.from(inserted));
   }
 
   static Future<void> deleteMonth(String monthKey) async {
-    final all = await loadTransactions();
-    final filtered = all.where((t) => monthKeyOf(t.date) != monthKey).toList();
-    await saveTransactions(filtered);
-
-    final set = await _loadMonthSet();
-    set.remove(monthKey);
-    await _saveMonthSet(set);
+    if (!Auth.canModifyData) return;
+    final raw = await fetchRawTransactions();
+    final removed = raw.where((t) => monthKeyOf(t.date) == monthKey).toList();
+    if (removed.isEmpty) return;
+    await RemoteLog.transactionsDeleted(await _applyExpected(removed));
+    final userId = await Auth.activeUserId();
+    if (userId == null) return;
+    final start = DateTime.parse('$monthKey-01');
+    final end = DateTime(start.year, start.month + 1, 1);
+    try {
+      await _client
+          .from('transactions')
+          .delete()
+          .eq('user_id', userId)
+          .gte('purchased_at', start.toIso8601String())
+          .lt('purchased_at', end.toIso8601String());
+    } catch (err) {
+      if (kDebugMode) debugPrint('Failed to delete month $monthKey: $err');
+    }
   }
 
   static Future<void> resetCurrentMonth() async {
+    if (!Auth.canModifyData) return;
     final nowKey = monthKeyOf(DateTime.now());
     await deleteMonth(nowKey);
   }
 
+  static Future<List<String>> loadMonthsDesc() async {
+    final raw = await fetchRawTransactions();
+    final set = <String>{};
+    for (final tx in raw) {
+      set.add(monthKeyOf(tx.date));
+    }
+    final list = set.toList()..sort();
+    return list.reversed.toList();
+  }
+
   static Future<MonthlySummary> computeSummary(String monthKey) async {
-    final tx = await loadTransactions();
-    final inMonth = tx.where((t) => monthKeyOf(t.date) == monthKey).toList();
-    final totalMoney =
-        inMonth.fold<double>(0, (p, n) => p + n.money);
-    final totalActual =
-        inMonth.fold<double>(0, (p, n) => p + n.actualKwh);
-    final totalExpected =
-        inMonth.fold<double>(0, (p, n) => p + n.expectedKwh);
+    final transactions = await loadTransactions();
+    final inMonth = transactions.where((t) => monthKeyOf(t.date) == monthKey).toList();
+    final totalMoney = inMonth.fold<double>(0, (sum, t) => sum + t.money);
+    final totalActual = inMonth.fold<double>(0, (sum, t) => sum + t.actualKwh);
+    final totalExpected = inMonth.fold<double>(0, (sum, t) => sum + t.expectedKwh);
     return MonthlySummary(
       monthKey: monthKey,
       totalMoney: totalMoney,
@@ -690,6 +1358,157 @@ class Store {
       totalExpectedKwh: totalExpected,
       transactions: inMonth.length,
     );
+  }
+}
+
+class RemoteLog {
+  static SupabaseClient get _client => Supabase.instance.client;
+
+  static Future<void> _insertEvents(List<Map<String, dynamic>> events) async {
+    if (events.isEmpty) return;
+    try {
+      await _client.from('transaction_events').insert(events);
+    } catch (err) {
+      if (kDebugMode) {
+        debugPrint('Failed to insert remote events: $err');
+      }
+    }
+  }
+
+  static Future<void> transactionCreated(TransactionRecord tx) async {
+    final userId = await Auth.activeUserId();
+    if (userId == null) return;
+    final performer = await Auth.actorUserId();
+    final payload = <String, dynamic>{
+      'user_id': userId,
+      'action': 'created',
+      'transaction_id': null,
+      'performed_by': performer ?? userId,
+      'snapshot': {
+        'type': 'transaction',
+        'transaction': tx.toJson(),
+      },
+    };
+    await _insertEvents([payload]);
+  }
+
+  static Future<void> transactionsDeleted(List<TransactionRecord> txs) async {
+    if (txs.isEmpty) return;
+    final userId = await Auth.activeUserId();
+    if (userId == null) return;
+    final performer = await Auth.actorUserId();
+    final events = txs.map((tx) {
+      return <String, dynamic>{
+        'user_id': userId,
+        'action': 'deleted',
+        'transaction_id': null,
+        'performed_by': performer ?? userId,
+        'snapshot': {
+          'type': 'transaction',
+          'transaction': tx.toJson(),
+        },
+      };
+    }).toList();
+    await _insertEvents(events);
+  }
+
+  static Future<void> queryMessage({
+    required String userEmail,
+    required SupportMessage message,
+  }) async {
+    final targetUserId = await Auth.userIdForEmail(userEmail);
+    if (targetUserId == null) return;
+    final performer = await Auth.actorUserId();
+    final payload = <String, dynamic>{
+      'user_id': targetUserId,
+      'action': 'created',
+      'transaction_id': null,
+      'performed_by': performer ?? targetUserId,
+      'snapshot': {
+        'type': 'query_message',
+        'sender': message.sender,
+        'userEmail': userEmail,
+        'body': message.body,
+        'timestamp': message.timestamp.toIso8601String(),
+      },
+    };
+    await _insertEvents([payload]);
+  }
+
+  static Future<List<RemoteEvent>> fetchEventsForUser(String userId,
+      {int limit = 50}) async {
+    try {
+      final rows = await _client
+          .from('transaction_events')
+          .select()
+          .eq('user_id', userId)
+          .order('created_at', ascending: false)
+          .limit(limit);
+      return rows
+          .map((e) => RemoteEvent.fromMap(Map<String, dynamic>.from(e)))
+          .toList();
+    } catch (err) {
+      if (kDebugMode) {
+        debugPrint('Failed to fetch activity: $err');
+      }
+      return const [];
+    }
+  }
+}
+
+class RemoteEvent {
+  final String id;
+  final String userId;
+  final String action;
+  final String? performedBy;
+  final Map<String, dynamic>? snapshot;
+  final DateTime createdAt;
+
+  const RemoteEvent({
+    required this.id,
+    required this.userId,
+    required this.action,
+    required this.performedBy,
+    required this.snapshot,
+    required this.createdAt,
+  });
+
+  factory RemoteEvent.fromMap(Map<String, dynamic> map) => RemoteEvent(
+        id: map['id'] as String,
+        userId: map['user_id'] as String,
+        action: map['action'] as String,
+        performedBy: map['performed_by'] as String?,
+        snapshot: map['snapshot'] == null
+            ? null
+            : Map<String, dynamic>.from(map['snapshot'] as Map),
+        createdAt: DateTime.parse(map['created_at'] as String),
+      );
+
+  bool get isTransaction => snapshot?['type'] == 'transaction';
+  bool get isQueryMessage => snapshot?['type'] == 'query_message';
+
+  String describe() {
+    if (isTransaction) {
+      final tx = snapshot?['transaction'] as Map<String, dynamic>? ?? {};
+      final amount = tx['money'];
+      final kwh = tx['actualKwh'];
+      final date = tx['date'];
+      final amountStr = amount is num ? amount.toStringAsFixed(2) : '$amount';
+      final kwhStr = kwh is num ? kwh.toStringAsFixed(2) : '$kwh';
+      return action == 'deleted'
+          ? 'Deleted transaction: R$amountStr, $kwhStr kWh ($date)'
+          : 'Added transaction: R$amountStr, $kwhStr kWh ($date)';
+    }
+    if (isQueryMessage) {
+      final sender = snapshot?['sender'] ?? 'user';
+      final body = snapshot?['body'] ?? '';
+      final bodyStr = body.toString();
+      final preview =
+          bodyStr.length > 120 ? '${bodyStr.substring(0, 117)}…' : bodyStr;
+      final label = sender == 'admin' ? 'Admin' : 'User';
+      return "$label message: $preview";
+    }
+    return action;
   }
 }
 
@@ -854,7 +1673,10 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _loadRegions() async {
     _regions = await TariffManager.loadTariffs();
-    if (_regions.isNotEmpty && _selectedRegionKey == null) {
+    if (_regions.isEmpty) {
+      _selectedRegionKey = null;
+    } else if (_selectedRegionKey == null ||
+        !_regions.any((r) => r.regionKey == _selectedRegionKey)) {
       _selectedRegionKey = _regions.first.regionKey;
     }
     if (mounted) setState(() {});
@@ -864,7 +1686,7 @@ class _LoginPageState extends State<LoginPage> {
     final email = emailC.text.trim();
     final pass = passC.text;
     if (email.isEmpty || pass.isEmpty) {
-      setState(() => message = 'Please enter email and password.');
+      setState(() => message = 'Please enter username and password.');
       return;
     }
     final ok = await Auth.login(email: email, password: pass);
@@ -872,9 +1694,10 @@ class _LoginPageState extends State<LoginPage> {
       setState(() => message = 'Invalid login.');
       return;
     }
-    // Persist chosen region into session for this login
     if (_selectedRegionKey != null) {
-      await Auth.setActiveRegionKey(_selectedRegionKey!);
+      final selected = _selectedRegionKey!;
+      await Auth.setRegion(email, selected);
+      await Auth.setActiveRegionKey(selected);
     }
     if (mounted) {
       Navigator.of(context).pushReplacement(
@@ -887,11 +1710,20 @@ class _LoginPageState extends State<LoginPage> {
     final email = emailC.text.trim();
     final pass = passC.text;
     if (email.isEmpty || pass.isEmpty) {
-      setState(() => message = 'Please enter email and password.');
+      setState(() => message = 'Please enter username and password.');
+      return;
+    }
+    if (email.length < 3) {
+      setState(() => message = 'Username must be at least 3 characters long.');
+      return;
+    }
+    if (pass.length < 6) {
+      setState(() => message = 'Password must be at least 6 characters long.');
       return;
     }
     if (_selectedRegionKey == null) {
-      setState(() => message = 'Select a region.');
+      setState(() => message =
+          _regions.isEmpty ? 'No regions available yet. Try again later.' : 'Select a region.');
       return;
     }
     final ok = await Auth.register(
@@ -911,15 +1743,79 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _doChangePass() async {
     final email = emailC.text.trim();
-    final pass = passC.text;
-    if (email.isEmpty || pass.isEmpty) {
-      setState(() => message = 'Please enter email and new password.');
+    final currentPass = passC.text;
+    if (email.isEmpty || currentPass.isEmpty) {
+      setState(() => message = 'Enter your username and current password.');
       return;
     }
-    final ok = await Auth.changePassword(email: email, newPassword: pass);
+    final newPassController = TextEditingController();
+    final newPassword = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Set new password'),
+        content: TextField(
+          controller: newPassController,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'New password',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = newPassController.text.trim();
+              Navigator.of(ctx).pop(value.isEmpty ? null : value);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    newPassController.dispose();
+    if (newPassword == null || newPassword.isEmpty) {
+      setState(() => message = 'Password change cancelled.');
+      return;
+    }
+    final ok = await Auth.changePassword(
+      email: email,
+      currentPassword: currentPass,
+      newPassword: newPassword,
+    );
+    if (ok) {
+      passC.clear();
+    }
     setState(() {
-      message = ok ? 'Password changed.' : 'User not found.';
+      message = ok
+          ? 'Password updated. Use your new password to sign in.'
+          : 'Incorrect username or password. Try again.';
     });
+  }
+
+  Future<void> _signInWithPrevious() async {
+    setState(() => message = '');
+    final ok = await Auth.loginWithPreviousDetails();
+    if (!ok) {
+      if (mounted) {
+        setState(() => message = 'No previous sign-in saved on this device.');
+      }
+      return;
+    }
+    final email = await Auth.activeEmail();
+    if (email != null) {
+      final region = await Auth.regionFor(email);
+      if (region != null) {
+        await Auth.setActiveRegionKey(region);
+      }
+    }
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const HomeShell()),
+    );
   }
 
   @override
@@ -928,7 +1824,7 @@ class _LoginPageState extends State<LoginPage> {
       body: Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
-            colors: [Color(0xFF1e3c72), Color(0xFF2a5298)],
+            colors: [Color(0xFFFFF3E0), Color(0xFFFFD180)],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
@@ -938,8 +1834,10 @@ class _LoginPageState extends State<LoginPage> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 420),
             child: Card(
-              elevation: 10,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              elevation: 12,
+              color: Colors.white,
+              shadowColor: Colors.deepOrange.withOpacity(0.25),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
               child: Padding(
                 padding: const EdgeInsets.all(20),
                 child: Column(
@@ -948,10 +1846,15 @@ class _LoginPageState extends State<LoginPage> {
                     const Text('Gauteng Electricity Tracker',
                         style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 16),
+                    FilledButton.tonal(
+                      onPressed: _signInWithPrevious,
+                      child: const Text('Sign in with previous details'),
+                    ),
+                    const SizedBox(height: 12),
                     TextField(
                       controller: emailC,
                       decoration: const InputDecoration(
-                        labelText: 'Email',
+                        labelText: 'Username',
                         border: OutlineInputBorder(),
                       ),
                     ),
@@ -965,23 +1868,29 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      value: _selectedRegionKey,
-                      items: _regions
-                          .map((r) => DropdownMenuItem(
-                                value: r.regionKey,
-                                child: Text(r.displayName),
-                              ))
-                          .toList(),
-                      onChanged: (v) => setState(() => _selectedRegionKey = v),
-                      decoration: const InputDecoration(
-                        labelText: 'Select Region (Gauteng)',
-                        border: OutlineInputBorder(),
+                    if (_regions.isEmpty)
+                      const Text(
+                        'No tariff regions available yet. Add tariff data in Settings once it is published.',
+                        textAlign: TextAlign.center,
+                      )
+                      else
+                      DropdownButtonFormField<String>(
+                        initialValue: _selectedRegionKey,
+                        items: _regions
+                            .map((r) => DropdownMenuItem(
+                                  value: r.regionKey,
+                                  child: Text(r.displayName),
+                                ))
+                            .toList(),
+                        onChanged: (v) => setState(() => _selectedRegionKey = v),
+                        decoration: const InputDecoration(
+                          labelText: 'Select Region (Gauteng)',
+                          border: OutlineInputBorder(),
+                        ),
                       ),
-                    ),
                     const SizedBox(height: 8),
                     DropdownButtonFormField<String>(
-                      value: _customerType,
+                      initialValue: _customerType,
                       items: const [
                         DropdownMenuItem(value: 'residential', child: Text('Residential')),
                         DropdownMenuItem(value: 'commercial', child: Text('Commercial')),
@@ -1055,31 +1964,139 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _tab = 0;
 
+  void _handleSessionChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  Future<int> _fetchUnreadCount() async {
+    if (Auth.isAdminActive && Auth.adminImpersonatingEmail == null) {
+      return QueryStore.unreadForAdmin();
+    }
+    final email = await Auth.activeEmail();
+    if (email == null) return 0;
+    return QueryStore.unreadForUser(email);
+  }
+
+  Future<void> _openQueryFromAppBar(int queriesIndex, bool isAdmin) async {
+    if (!mounted) return;
+    if (isAdmin && queriesIndex >= 0 && Auth.adminImpersonatingEmail == null) {
+      setState(() => _tab = queriesIndex);
+      return;
+    }
+    final email = await Auth.activeEmail();
+    if (!mounted) return;
+    if (email == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Sign in to send a query.')),
+      );
+      return;
+    }
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => QueryConversationPage(
+          userEmail: email,
+          isAdmin: Auth.isAdminActive && Auth.adminImpersonatingEmail != null,
+          onUpdated: _handleSessionChanged,
+        ),
+      ),
+    );
+    _handleSessionChanged();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final pages = [
-      const CalculatorPage(),
-      const HistoryPage(),
-      const MonthlyPage(),
-      const SettingsPage(),
-    ];
-    final titles = ['Calculator', 'History', 'Monthly cumulative purchases', 'Settings'];
+    final isAdmin = Auth.isAdminActive;
+    final sessionGen = Auth.sessionGeneration;
+
+    final pages = <Widget>[];
+    final titles = <String>[];
+    final destinations = <NavigationDestination>[];
+    int queriesIndex = -1;
+
+    pages.add(CalculatorPage(key: ValueKey('calc_$sessionGen')));
+    titles.add('Calculator');
+    destinations.add(const NavigationDestination(icon: Icon(Icons.calculate), label: 'Calc'));
+
+    pages.add(HistoryPage(key: ValueKey('hist_$sessionGen')));
+    titles.add('History');
+    destinations.add(const NavigationDestination(icon: Icon(Icons.history), label: 'History'));
+
+    pages.add(MonthlyPage(key: ValueKey('month_$sessionGen')));
+    titles.add('Monthly cumulative purchases');
+    destinations.add(const NavigationDestination(icon: Icon(Icons.calendar_month), label: 'Monthly'));
+
+    if (isAdmin) {
+      queriesIndex = pages.length;
+      pages.add(AdminQueriesPage(
+        key: ValueKey('admin_queries_$sessionGen'),
+        onSessionChanged: _handleSessionChanged,
+      ));
+      titles.add('Queries');
+      destinations.add(const NavigationDestination(icon: Icon(Icons.mark_chat_unread), label: 'Queries'));
+
+      pages.add(AdminPage(
+        key: ValueKey('super_$sessionGen'),
+        onSessionChanged: _handleSessionChanged,
+      ));
+      titles.add('Admin');
+      destinations.add(const NavigationDestination(icon: Icon(Icons.admin_panel_settings), label: 'Admin'));
+    }
+
+    pages.add(SettingsPage(
+      key: ValueKey('settings_$sessionGen'),
+      onQueryActivity: _handleSessionChanged,
+    ));
+    titles.add('Settings');
+    destinations.add(const NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'));
+
+    int currentTab = _tab;
+    if (currentTab >= pages.length) {
+      currentTab = pages.length - 1;
+    }
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(titles[_tab]),
+        title: Text(titles[currentTab]),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-      ),
-      body: pages[_tab],
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.calculate), label: 'Calc'),
-          NavigationDestination(icon: Icon(Icons.history), label: 'History'),
-          NavigationDestination(icon: Icon(Icons.calendar_month), label: 'Monthly'),
-          NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'),
+        actions: [
+          FutureBuilder<int>(
+            key: ValueKey('queries_badge_$sessionGen'),
+            future: _fetchUnreadCount(),
+            builder: (context, snapshot) {
+              final unread = snapshot.data ?? 0;
+              return IconButton(
+                onPressed: () => _openQueryFromAppBar(queriesIndex, isAdmin),
+                tooltip: 'Queries',
+                icon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    const Icon(Icons.chat_bubble_outline),
+                    if (unread > 0)
+                      Positioned(
+                        right: -2,
+                        top: -2,
+                        child: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            },
+          ),
         ],
+      ),
+      body: pages[currentTab],
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: currentTab,
+        onDestinationSelected: (i) => setState(() => _tab = i),
+        destinations: destinations,
       ),
     );
   }
@@ -1096,6 +2113,7 @@ class CalculatorPage extends StatefulWidget {
 }
 
 class _CalculatorPageState extends State<CalculatorPage> {
+  final TextEditingController _smsC = TextEditingController();
   final moneyC = TextEditingController();
   final actualC = TextEditingController();
   DateTime? _pickedDate;
@@ -1103,6 +2121,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
   RegionTariff? _activeRegion;
 
   String _resultText = '';
+  bool _smsParserEnabled = false;
 
   @override
   void initState() {
@@ -1112,9 +2131,152 @@ class _CalculatorPageState extends State<CalculatorPage> {
 
   @override
   void dispose() {
+    _smsC.dispose();
     moneyC.dispose();
     actualC.dispose();
     super.dispose();
+  }
+
+  void _parseSms() {
+    final sms = _smsC.text.trim();
+    if (!_smsParserEnabled) {
+      _toast('Enable the SMS helper first.');
+      return;
+    }
+    if (sms.isEmpty) {
+      _toast('Paste the SMS message first.');
+      return;
+    }
+
+    double? parseAmount(String text) {
+      final moneyPatterns = [
+        RegExp(r'R\s*([0-9]+(?:[.,][0-9]{1,2})?)', caseSensitive: false),
+        RegExp(r'Rand\s*([0-9]+(?:[.,][0-9]{1,2})?)', caseSensitive: false),
+        RegExp(r'Amount[:\s]*([0-9]+(?:[.,][0-9]{1,2})?)', caseSensitive: false),
+      ];
+      for (final pattern in moneyPatterns) {
+        final match = pattern.firstMatch(text);
+        if (match != null) {
+          final raw = match.group(1)!.replaceAll(',', '.');
+          final value = double.tryParse(raw);
+          if (value != null) return value;
+        }
+      }
+      final generic = RegExp(r'([0-9]+(?:[.,][0-9]{1,2}))');
+      final all = generic.allMatches(text).toList();
+      for (final match in all) {
+        final raw = match.group(1)!.replaceAll(',', '.');
+        final value = double.tryParse(raw);
+        if (value != null) return value;
+      }
+      return null;
+    }
+
+    double? parseKwh(String text) {
+      final patterns = [
+        RegExp(r'([0-9]+(?:[.,][0-9]+)?)\s*(?:kwh|kWh|kWhs|units)', caseSensitive: false),
+        RegExp(r'(?:kwh|kWh|units)\s*([0-9]+(?:[.,][0-9]+)?)', caseSensitive: false),
+      ];
+      for (final pattern in patterns) {
+        final match = pattern.firstMatch(text);
+        if (match != null) {
+          final raw = match.group(1)!.replaceAll(',', '.');
+          final value = double.tryParse(raw);
+          if (value != null) return value;
+        }
+      }
+      return null;
+    }
+
+    String titleCase(String input) {
+      return input
+          .split(RegExp(r'\s+'))
+          .map((word) => word.isEmpty
+              ? word
+              : word[0].toUpperCase() + word.substring(1).toLowerCase())
+          .join(' ');
+    }
+
+    DateTime? parseDate(String text) {
+      final patterns = [
+        RegExp(r'(\d{4}[-/]\d{2}[-/]\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)'),
+        RegExp(r'(\d{2}[-/]\d{2}[-/]\d{4})'),
+        RegExp(r'(\d{2}\s+[A-Za-z]{3,}\s+\d{4})'),
+        RegExp(r'([A-Za-z]{3,}\s+\d{1,2},?\s+\d{4})'),
+        RegExp(r'(\d{2}[.]+\d{2}[.]+\d{4})'),
+        RegExp(r'(\d{2}[.]+[A-Za-z]{3,}[.]+\d{4})'),
+      ];
+      DateTime? parsed;
+      for (final pattern in patterns) {
+        final match = pattern.firstMatch(text);
+        if (match == null) continue;
+        final value = match.group(1)!;
+        final candidates = <String>{
+          value,
+          value.replaceAll('/', '-'),
+          value.replaceAll('.', '-'),
+          value.toLowerCase(),
+          value.toUpperCase(),
+          titleCase(value),
+        };
+        final formats = [
+          DateFormat('dd/MM/yyyy'),
+          DateFormat('dd-MM-yyyy'),
+          DateFormat('dd MMM yyyy'),
+          DateFormat('dd MMMM yyyy'),
+          DateFormat('MMM dd yyyy'),
+          DateFormat('MMMM dd yyyy'),
+          DateFormat('MM/dd/yyyy'),
+          DateFormat('MM-dd-yyyy'),
+          DateFormat('MM.dd.yyyy'),
+          DateFormat('dd.MM.yyyy'),
+          DateFormat('yyyy/MM/dd'),
+          DateFormat('yyyy-MM-dd'),
+          DateFormat('yyyy.MM.dd'),
+        ];
+        for (final candidate in candidates) {
+          parsed = DateTime.tryParse(candidate);
+          if (parsed != null) break;
+          for (final fmt in formats) {
+            try {
+              parsed = fmt.parse(candidate);
+              break;
+            } catch (_) {}
+          }
+          if (parsed != null) break;
+        }
+        if (parsed != null) break;
+      }
+      return parsed;
+    }
+
+    final amount = parseAmount(sms);
+    final kwh = parseKwh(sms);
+    final date = parseDate(sms);
+
+    if (amount != null) {
+      moneyC.text = amount.toStringAsFixed(2);
+    }
+    if (kwh != null) {
+      actualC.text = kwh.toStringAsFixed(2);
+    }
+    if (date != null) {
+      setState(() => _pickedDate = date);
+    } else if (_pickedDate == null) {
+      setState(() {});
+    }
+
+    final results = <String>[];
+    results.add(amount != null
+        ? 'Amount R${amount.toStringAsFixed(2)}'
+        : 'Amount not found');
+    results.add(kwh != null
+        ? '${kwh.toStringAsFixed(2)} kWh captured'
+        : 'kWh not found');
+    if (date != null) {
+      results.add('Date ${DateFormat('yyyy-MM-dd').format(date)}');
+    }
+    _toast(results.join(' | '));
   }
 
   Future<void> _loadRegion() async {
@@ -1123,12 +2285,20 @@ class _CalculatorPageState extends State<CalculatorPage> {
     // Latest-only is sufficient for header display
     final regions = await TariffManager.loadTariffsForType(customerType);
     final regionKey = await Auth.activeRegionKey();
-    final fallbackKey = regions.isNotEmpty ? regions.first.regionKey : 'tshwane';
+    String? targetKey = regionKey;
+    if (targetKey != null && regions.every((r) => r.regionKey != targetKey)) {
+      targetKey = null;
+    }
+    if (targetKey == null && regions.isNotEmpty) {
+      targetKey = regions.first.regionKey;
+    }
     // Use today's effective tariff for displaying in header
     final today = DateTime.now();
-    final region = TariffManager.findRegionForDate(
-            regions, regionKey ?? fallbackKey, today) ??
-        (TariffManager.findRegion(regions, regionKey ?? fallbackKey) ?? regions.first);
+    RegionTariff? region;
+    if (targetKey != null) {
+      region = TariffManager.findRegionForDate(regions, targetKey, today) ??
+          TariffManager.findRegion(regions, targetKey);
+    }
     setState(() => _activeRegion = region);
   }
 
@@ -1137,13 +2307,17 @@ class _CalculatorPageState extends State<CalculatorPage> {
     final d = await showDatePicker(
       context: context,
       firstDate: DateTime(now.year - 3),
-      lastDate: now, // 👈 prevent selecting future dates
+      lastDate: now, // ?? prevent selecting future dates
       initialDate: _pickedDate ?? now,
     );
     if (d != null) setState(() => _pickedDate = d);
   }
 
   Future<void> _calculateAndSave() async {
+    if (!Auth.canModifyData) {
+      _toast('View-only mode. Enable change mode to modify this account.');
+      return;
+    }
     final money = double.tryParse(moneyC.text.replaceAll(',', '.'));
     final actual = double.tryParse(actualC.text.replaceAll(',', '.'));
 
@@ -1165,71 +2339,73 @@ class _CalculatorPageState extends State<CalculatorPage> {
     final date = _pickedDate ?? DateTime.now();
     // Resolve the tariff version effective on the chosen date
     final email = await Auth.activeEmail();
-    final customerType = email == null ? 'residential' : await Auth.customerTypeFor(email);
     // Use full history to pick by date
     final regions = await TariffManager.loadTariffsAll();
-    final regionKey = _activeRegion?.regionKey ?? (await Auth.activeRegionKey()) ??
-        (regions.isNotEmpty ? regions.first.regionKey : 'tshwane');
+    String? regionKey = _activeRegion?.regionKey ?? await Auth.activeRegionKey();
+    if (regionKey != null && regions.every((r) => r.regionKey != regionKey)) {
+      regionKey = null;
+    }
+    regionKey ??= regions.isNotEmpty ? regions.first.regionKey : null;
+    if (regionKey == null) {
+      _toast('No tariff data available. Add tariffs in Settings first.');
+      return;
+    }
     final regionForDate = TariffManager.findRegionForDate(regions, regionKey, date) ??
-        (TariffManager.findRegion(regions, regionKey) ?? regions.first);
+        TariffManager.findRegion(regions, regionKey);
+    if (regionForDate == null) {
+      _toast('No tariff data available for the selected date.');
+      return;
+    }
     final monthKey = Store.monthKeyOf(date);
 
-    final allBefore = await Store.loadTransactions();
-    // Sort ascending by date to apply tiers in order
-    final monthList = allBefore
-        .where((t) => Store.monthKeyOf(t.date) == monthKey && t.regionKey == _activeRegion!.regionKey)
-        .toList()
-      ..sort((a, b) => a.date.compareTo(b.date));
-
-    // Recompute expected for each prior tx in this month using cumulative cursor
-    double cursorBought = 0.0;
-    final List<TransactionRecord> recomputed = [];
-    for (final t in monthList) {
-      // Use the tariff effective on each transaction's date
-      final rT = TariffManager.findRegionForDate(regions, t.regionKey, t.date) ?? regionForDate;
-      final exp = Calc.expectedKwhFromMoneyAt(t.money, rT.blocks, cursorBought);
-      cursorBought += exp;
-      recomputed.add(TransactionRecord(
-        id: t.id,
-        regionKey: t.regionKey,
-        date: t.date,
-        money: t.money,
-        actualKwh: t.actualKwh,
-        expectedKwh: exp,
-      ));
-    }
-
-    // Expected for this new transaction continues from month cursor
-    final expected = Calc.expectedKwhFromMoneyAt(money, regionForDate.blocks, cursorBought);
-    final breakdown = Calc.breakdownForPurchase(money, regionForDate.blocks, cursorBought);
-    final pct = Calc.percentDiff(expected, actual);
-    final vat = Calc.vatPortion(money);
-    final net = Calc.netExVat(money);
-    final tx = TransactionRecord(
-      id: 'tx_${DateTime.now().millisecondsSinceEpoch}',
+    final rawTransactions = await Store.fetchRawTransactions();
+    final monthList = rawTransactions
+        .where((t) =>
+            Store.monthKeyOf(t.date) == monthKey &&
+            t.regionKey == regionForDate.regionKey)
+        .toList();
+    final placeholder = TransactionRecord(
+      id: '',
       regionKey: regionForDate.regionKey,
       date: date,
       money: money,
       actualKwh: actual,
-      expectedKwh: expected,
+      expectedKwh: 0,
     );
+    monthList.add(placeholder);
+    monthList.sort((a, b) => a.date.compareTo(b.date));
 
-    // Merge recomputed month entries back with other months and save
-    final all = await Store.loadTransactions();
-    // Remove this month's entries for this region, replace with recomputed
-    final filtered = all
-        .where((t) => !(Store.monthKeyOf(t.date) == monthKey && t.regionKey == _activeRegion!.regionKey))
-        .toList();
-    filtered.addAll(recomputed);
-    filtered.add(tx);
-    // Keep same descending sort then cap in save
-    filtered.sort((a, b) => b.date.compareTo(a.date));
-    await Store.saveTransactions(filtered);
-    await Store.includeMonth(Store.monthKeyOf(date));
+    double cursorBought = 0.0;
+    double cursorBeforePurchase = 0.0;
+    final List<TransactionRecord> recomputed = [];
+    TransactionRecord? newTransactionComputed;
+    for (final t in monthList) {
+      if (t.id.isEmpty) {
+        cursorBeforePurchase = cursorBought;
+      }
+      final rT = TariffManager.findRegionForDate(regions, t.regionKey, t.date) ?? regionForDate;
+      final exp = Calc.expectedKwhFromMoneyAt(t.money, rT.blocks, cursorBought);
+      cursorBought += exp;
+      final updated = t.copyWith(expectedKwh: exp);
+      if (t.id.isEmpty) {
+        newTransactionComputed = updated;
+      } else {
+        recomputed.add(updated);
+      }
+    }
 
+    await Store.updateTransactions(recomputed);
+    final inserted = await Store.insertTransaction(newTransactionComputed ?? placeholder);
+    await RemoteLog.transactionCreated(inserted);
+
+    final expected = inserted.expectedKwh;
+    final breakdown = Calc.breakdownForPurchase(money, regionForDate.blocks, cursorBeforePurchase);
+    final pct = Calc.percentDiff(expected, actual);
+    final vat = Calc.vatPortion(money);
+    final net = Calc.netExVat(money);
     setState(() {
       final bd = breakdown.map((b) {
-        final rng = b.to == null ? '${b.from}–∞' : '${b.from}–${b.to}';
+        final rng = b.to == null ? '${b.from}-8' : '${b.from}-${b.to}';
         return 'Tier ${b.tierIndex} (${rng}) @ R${b.rate.toStringAsFixed(4)}/kWh -> '
                '${b.kwh.toStringAsFixed(2)} kWh, R${b.cost.toStringAsFixed(2)}';
       }).join('\n');
@@ -1237,7 +2413,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
       _resultText =
           'Detailed calculation (month-cumulative)\n'
           'Region: ${regionForDate.displayName}\n'
-          'Month-to-date before purchase: ${cursorBought.toStringAsFixed(2)} kWh\n'
+          'Month-to-date before purchase: ${cursorBeforePurchase.toStringAsFixed(2)} kWh\n'
           'Breakdown:\n${bd.isEmpty ? '(no spend)' : bd}\n'
           '---\n'
           'Expected (this purchase): ${expected.toStringAsFixed(2)} kWh\n'
@@ -1261,6 +2437,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
 
   @override
   Widget build(BuildContext context) {
+    final canEdit = Auth.canModifyData;
     final regionName = _activeRegion?.displayName ?? '...';
     final dateLabel = _pickedDate == null
         ? 'Pick purchase date'
@@ -1269,7 +2446,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [Color(0xFFE3F2FD), Color(0xFFBBDEFB)],
+          colors: [Color(0xFFFFF9E6), Color(0xFFFFE0B2)],
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
         ),
@@ -1285,6 +2462,55 @@ class _CalculatorPageState extends State<CalculatorPage> {
             ),
           ),
           const SizedBox(height: 8),
+          SwitchListTile.adaptive(
+            value: _smsParserEnabled,
+            onChanged: canEdit
+                ? (value) {
+                    setState(() {
+                      _smsParserEnabled = value;
+                      if (!value) {
+                        _smsC.clear();
+                      }
+                    });
+                  }
+                : null,
+            title: const Text('Enable SMS paste helper'),
+            subtitle: const Text('Toggle to paste and auto-fill details from tokens SMS'),
+          ),
+          if (_smsParserEnabled) ...[
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Paste SMS',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _smsC,
+                      enabled: canEdit,
+                      maxLines: 4,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        hintText: 'Paste the electricity purchase SMS here',
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: OutlinedButton.icon(
+                        onPressed: canEdit ? _parseSms : null,
+                        icon: const Icon(Icons.content_paste_search),
+                        label: const Text('Parse SMS'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
           TextField(
             controller: moneyC,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -1295,6 +2521,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
               border: OutlineInputBorder(),
               prefixText: 'R ',
             ),
+            enabled: canEdit,
           ),
           const SizedBox(height: 8),
           TextField(
@@ -1307,23 +2534,37 @@ class _CalculatorPageState extends State<CalculatorPage> {
               border: OutlineInputBorder(),
               suffixText: 'kWh',
             ),
+            enabled: canEdit,
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
-            onPressed: _pickDate,
+            onPressed: canEdit ? _pickDate : null,
             icon: const Icon(Icons.date_range),
             label: Text(dateLabel),
             style: OutlinedButton.styleFrom(backgroundColor: Colors.white),
           ),
           const SizedBox(height: 12),
           FilledButton.icon(
-            onPressed: _calculateAndSave,
+            onPressed: canEdit ? _calculateAndSave : null,
             icon: const Icon(Icons.save),
             label: const Text('Calculate & Save'),
             style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)),
           ),
+          if (Auth.isAdminViewing && !canEdit) ...[
+            const SizedBox(height: 12),
+            Card(
+              color: Colors.red.shade50,
+              child: const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text(
+                  'You are viewing another user in read-only mode. Enable change mode from the Admin tab to make adjustments.',
+                  style: TextStyle(fontSize: 12, color: Colors.black87),
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
-          // ⚠️ New disclaimer card about block pricing accuracy
+          // ?? New disclaimer card about block pricing accuracy
           Card(
             color: Colors.orange.shade50,
             child: const Padding(
@@ -1363,7 +2604,7 @@ class _CalculatorPageState extends State<CalculatorPage> {
 }
 
 /// =======================================================
-/// HISTORY (last 20) with long-press delete
+/// HISTORY (last 20)
 /// =======================================================
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
@@ -1407,10 +2648,15 @@ class _HistoryPageState extends State<HistoryPage> {
   Future<String> _computeDetails(TransactionRecord t) async {
     // Use customer type of active user if available (falls back to residential)
     final email = await Auth.activeEmail();
-    final customerType = email == null ? 'residential' : await Auth.customerTypeFor(email);
     final regions = await TariffManager.loadTariffsAll();
+    if (regions.isEmpty) {
+      return 'No tariff data available. Add tariffs in Settings once they are published.';
+    }
     final region = TariffManager.findRegionForDate(regions, t.regionKey, t.date) ??
-        (TariffManager.findRegion(regions, t.regionKey) ?? regions.first);
+        TariffManager.findRegion(regions, t.regionKey);
+    if (region == null) {
+      return 'No tariff data found for region ${t.regionKey}.';
+    }
 
     // Compute month-to-date cursor before this transaction for the same region
     final monthKey = Store.monthKeyOf(t.date);
@@ -1434,7 +2680,7 @@ class _HistoryPageState extends State<HistoryPage> {
     final net = Calc.netExVat(t.money);
 
     final bd = breakdown.map((b) {
-      final rng = b.to == null ? '${b.from}–' : '${b.from}–${b.to}';
+      final rng = b.to == null ? '${b.from}-' : '${b.from}-${b.to}';
       return 'Tier ${b.tierIndex} (${rng}) @ R${b.rate.toStringAsFixed(4)}/kWh -> '
           '${b.kwh.toStringAsFixed(2)} kWh, R${b.cost.toStringAsFixed(2)}';
     }).join('\n');
@@ -1466,35 +2712,10 @@ class _HistoryPageState extends State<HistoryPage> {
     }
   }
 
-  Future<void> _deleteTx(String id) async {
-    final all = await Store.loadTransactions();
-    all.removeWhere((t) => t.id == id);
-    await Store.saveTransactions(all);
-    await _load();
-  }
-
   void _onLongPress(TransactionRecord t) {
-    showModalBottomSheet(
-      context: context,
-      builder: (_) => SafeArea(
-        child: Wrap(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.delete, color: Colors.red),
-              title: const Text('Delete transaction'),
-              onTap: () async {
-                Navigator.pop(context);
-                await _deleteTx(t.id);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Transaction deleted')),
-                  );
-                }
-              },
-            ),
-            // Future options: Edit, Export
-          ],
-        ),
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Delete individual entries by removing the month in the Monthly tab.'),
       ),
     );
   }
@@ -1508,7 +2729,7 @@ class _HistoryPageState extends State<HistoryPage> {
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [Color(0xFFFAFAFA), Color(0xFFECEFF1)],
+          colors: [Color(0xFFFFFBF2), Color(0xFFFFF3E0)],
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
         ),
@@ -1527,7 +2748,7 @@ class _HistoryPageState extends State<HistoryPage> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: DropdownButtonFormField<String>(
-                        value: _selectedMonth ?? 'all',
+                        initialValue: _selectedMonth ?? 'all',
                         items: [
                           const DropdownMenuItem(value: 'all', child: Text('All months')),
                           ..._months.map((m) => DropdownMenuItem(value: m, child: Text(m))),
@@ -1565,12 +2786,12 @@ class _HistoryPageState extends State<HistoryPage> {
                     onExpansionChanged: (expanded) {
                       if (expanded) _ensureDetails(t);
                     },
-                    title: Text('R${t.money.toStringAsFixed(2)} • $df'),
+                    title: Text('R${t.money.toStringAsFixed(2)} | $df'),
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Expected: ${t.expectedKwh.toStringAsFixed(2)} kWh • '
+                          'Expected: ${t.expectedKwh.toStringAsFixed(2)} kWh | '
                           'Actual: ${t.actualKwh.toStringAsFixed(2)} kWh',
                         ),
                         Text(
@@ -1639,6 +2860,14 @@ class _MonthlyPageState extends State<MonthlyPage> {
   }
 
   Future<void> _resetCurrentMonth() async {
+    if (!Auth.canModifyData) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Read-only mode. Enable change mode to reset months.')),
+        );
+      }
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -1666,6 +2895,12 @@ class _MonthlyPageState extends State<MonthlyPage> {
   }
 
   void _onLongPressMonth(String monthKey) {
+    if (!Auth.canModifyData) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Read-only mode. Enable change mode to delete months.')),
+      );
+      return;
+    }
     showModalBottomSheet(
       context: context,
       builder: (_) => SafeArea(
@@ -1699,7 +2934,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [Color(0xFFF1F8E9), Color(0xFFE8F5E9)],
+          colors: [Color(0xFFFFF8E1), Color(0xFFFFE0B2)],
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
         ),
@@ -1765,7 +3000,7 @@ class _MonthlyPageState extends State<MonthlyPage> {
                             'Difference: ${pct > 0 ? '+' : ''}${pct.toStringAsFixed(2)}%',
                             style: TextStyle(color: pctColor, fontWeight: FontWeight.w600),
                           ),
-                          Text('VAT (15%): R${s.vatPortion.toStringAsFixed(2)} • '
+                          Text('VAT (15%): R${s.vatPortion.toStringAsFixed(2)} | '
                               'Net: R${s.netExVat.toStringAsFixed(2)}'),
                         ],
                       );
@@ -1811,10 +3046,564 @@ class _SummaryView extends StatelessWidget {
 }
 
 /// =======================================================
+/// QUERIES (shared conversation UI)
+/// =======================================================
+class QueryConversationPage extends StatefulWidget {
+  final String userEmail;
+  final bool isAdmin;
+  final VoidCallback? onUpdated;
+
+  const QueryConversationPage({
+    super.key,
+    required this.userEmail,
+    required this.isAdmin,
+    this.onUpdated,
+  });
+
+  @override
+  State<QueryConversationPage> createState() => _QueryConversationPageState();
+}
+
+class _QueryConversationPageState extends State<QueryConversationPage> {
+  final TextEditingController _messageC = TextEditingController();
+  final ScrollController _scrollC = ScrollController();
+  List<SupportMessage> _messages = const [];
+  bool _loading = true;
+  Timer? _pollTimer;
+
+  bool get _isAdmin => widget.isAdmin;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadThread();
+    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) => _loadThread(silent: true));
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    _messageC.dispose();
+    _scrollC.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadThread({bool silent = false}) async {
+    if (!mounted) return;
+    final previousCount = _messages.length;
+    if (!silent) {
+      setState(() => _loading = true);
+    }
+    final thread = await QueryStore.threadFor(widget.userEmail);
+    if (_isAdmin) {
+      await QueryStore.markReadByAdmin(widget.userEmail);
+    } else {
+      await QueryStore.markReadByUser(widget.userEmail);
+    }
+    widget.onUpdated?.call();
+    if (!mounted) return;
+    final newMessages = thread.messages;
+    final hasNewMessage = newMessages.length != previousCount;
+    if (silent && !hasNewMessage) {
+      return;
+    }
+    setState(() {
+      _messages = newMessages;
+      if (!silent) {
+        _loading = false;
+      }
+    });
+    if (hasNewMessage) {
+      _scrollToBottom();
+    }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollC.hasClients) return;
+      _scrollC.animateTo(
+        _scrollC.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  Future<void> _sendMessage() async {
+    final text = _messageC.text.trim();
+    if (text.isEmpty) return;
+    final message = SupportMessage(
+      sender: _isAdmin ? 'admin' : 'user',
+      body: text,
+      timestamp: DateTime.now(),
+      readByUser: _isAdmin ? false : true,
+      readByAdmin: _isAdmin ? true : false,
+    );
+    await QueryStore.addMessage(userEmail: widget.userEmail, message: message);
+    _messageC.clear();
+    FocusScope.of(context).unfocus();
+    await _loadThread();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = _isAdmin ? 'Queries: ${widget.userEmail}' : 'Contact Admin';
+    return Scaffold(
+      appBar: AppBar(title: Text(title)),
+      body: Column(
+        children: [
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _messages.isEmpty
+                    ? const Center(child: Text('No messages yet. Send one below.'))
+                    : ListView.builder(
+                        controller: _scrollC,
+                        padding: const EdgeInsets.all(12),
+                        itemCount: _messages.length,
+                        itemBuilder: (context, index) {
+                          final msg = _messages[index];
+                          final mine = _isAdmin ? msg.sender == 'admin' : msg.sender == 'user';
+                          final align = mine ? Alignment.centerRight : Alignment.centerLeft;
+                          final bubbleColor = mine
+                              ? Theme.of(context).colorScheme.primary
+                              : Colors.grey.shade300;
+                          final textColor = mine ? Colors.white : Colors.black87;
+                          final stamp = DateFormat('yyyy-MM-dd HH:mm').format(msg.timestamp);
+                          return Align(
+                            alignment: align,
+                            child: Container(
+                              constraints: const BoxConstraints(maxWidth: 320),
+                              margin: const EdgeInsets.symmetric(vertical: 4),
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: bubbleColor,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: mine
+                                    ? CrossAxisAlignment.end
+                                    : CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(msg.body,
+                                      style: TextStyle(color: textColor, fontSize: 15)),
+                                  const SizedBox(height: 4),
+                                  Text(stamp,
+                                      style: TextStyle(
+                                        color: textColor.withOpacity(0.75),
+                                        fontSize: 11,
+                                      )),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+          ),
+          const Divider(height: 1),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _messageC,
+                      minLines: 1,
+                      maxLines: 4,
+                      decoration: const InputDecoration(
+                        hintText: 'Type your message...',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: _sendMessage,
+                    icon: const Icon(Icons.send),
+                    label: const Text('Send'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class AdminQueriesPage extends StatefulWidget {
+  final VoidCallback onSessionChanged;
+  const AdminQueriesPage({super.key, required this.onSessionChanged});
+
+  @override
+  State<AdminQueriesPage> createState() => _AdminQueriesPageState();
+}
+
+class _AdminQueriesPageState extends State<AdminQueriesPage> {
+  late Future<List<QueryThread>> _threadsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _threadsFuture = QueryStore.allSorted();
+  }
+
+  Future<void> _reload() async {
+    final future = QueryStore.allSorted();
+    setState(() {
+      _threadsFuture = future;
+    });
+    await future;
+    widget.onSessionChanged();
+  }
+
+  Future<void> _openThread(QueryThread thread) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => QueryConversationPage(
+          userEmail: thread.userEmail,
+          isAdmin: true,
+          onUpdated: () {
+            widget.onSessionChanged();
+          },
+        ),
+      ),
+    );
+    widget.onSessionChanged();
+    await _reload();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator(
+      onRefresh: _reload,
+      child: FutureBuilder<List<QueryThread>>(
+        future: _threadsFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return ListView(
+              padding: const EdgeInsets.all(24),
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: [
+                Text('Failed to load queries: ${snapshot.error}'),
+              ],
+            );
+          }
+          final threads = snapshot.data ?? const [];
+          if (threads.isEmpty) {
+            return ListView(
+              padding: const EdgeInsets.all(24),
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: const [Center(child: Text('No queries yet.'))],
+            );
+          }
+          return ListView.builder(
+            padding: const EdgeInsets.all(12),
+            itemCount: threads.length,
+            itemBuilder: (context, index) {
+              final thread = threads[index];
+              final unread = thread.unreadForAdmin;
+              final lastMsg = thread.messages.isNotEmpty ? thread.messages.last : null;
+              final preview = lastMsg?.body ?? 'No messages yet';
+              final stamp = lastMsg == null
+                  ? ''
+                  : DateFormat('yyyy-MM-dd HH:mm').format(lastMsg.timestamp);
+              return Card(
+                child: ListTile(
+                  leading: CircleAvatar(
+                    child: Text(thread.userEmail.isEmpty
+                        ? '?'
+                        : thread.userEmail[0].toUpperCase()),
+                  ),
+                  title: Text(thread.userEmail),
+                  subtitle: Text(stamp.isEmpty ? preview : '$preview\n$stamp'),
+                  isThreeLine: stamp.isNotEmpty,
+                  trailing: unread > 0
+                      ? Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text('$unread', style: const TextStyle(color: Colors.white)),
+                        )
+                      : null,
+                  onTap: () => _openThread(thread),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// =======================================================
+/// SUPERUSER
+/// =======================================================
+class AdminPage extends StatefulWidget {
+  final VoidCallback onSessionChanged;
+  const AdminPage({super.key, required this.onSessionChanged});
+
+  @override
+  State<AdminPage> createState() => _AdminPageState();
+}
+
+class _AdminPageState extends State<AdminPage> {
+  late Future<List<_UserSummary>> _usersFuture;
+  String _search = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _usersFuture = _loadUsers();
+  }
+
+  Future<List<_UserSummary>> _loadUsers() async {
+    final raw = await Auth.allUsers();
+    final out = <_UserSummary>[];
+    raw.forEach((key, value) {
+      if (value is Map<String, dynamic>) {
+        out.add(_UserSummary(
+          email: key,
+          regionKey: value['regionKey'] as String?,
+          customerType: (value['customerType'] as String?) ?? 'residential',
+          userId: value['userId'] as String?,
+        ));
+      }
+    });
+    out.sort((a, b) => a.email.toLowerCase().compareTo(b.email.toLowerCase()));
+    return out;
+  }
+
+  Future<void> _refreshUsers() async {
+    final future = _loadUsers();
+    setState(() {
+      _usersFuture = future;
+    });
+    await future;
+  }
+
+  Future<void> _impersonate(String email) async {
+    await Auth.setAdminImpersonation(email);
+    widget.onSessionChanged();
+    if (!mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Viewing account: $email')),
+    );
+  }
+
+  Future<void> _showActivity(_UserSummary user) async {
+    final userId = user.userId;
+    if (userId == null || userId.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No activity available for ${user.email}')),
+      );
+      return;
+    }
+    final events = await RemoteLog.fetchEventsForUser(userId);
+    if (!mounted) return;
+    await showModalBottomSheet(
+      context: context,
+      useSafeArea: true,
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: events.isEmpty
+              ? const Text('No activity recorded yet.')
+              : ListView.separated(
+                  itemCount: events.length,
+                  separatorBuilder: (_, __) => const Divider(height: 16),
+                  itemBuilder: (context, index) {
+                    final event = events[index];
+                    final stamp =
+                        DateFormat('yyyy-MM-dd HH:mm').format(event.createdAt.toLocal());
+                    final performer = event.performedBy == null
+                        ? 'User'
+                        : (event.performedBy == userId ? 'User' : 'Admin');
+                    return ListTile(
+                      leading: Icon(
+                        event.isTransaction
+                            ? (event.action == 'deleted'
+                                ? Icons.delete_outline
+                                : Icons.add_circle_outline)
+                            : Icons.chat_bubble_outline,
+                      ),
+                      title: Text(event.describe()),
+                      subtitle: Text('$stamp - $performer'),
+                    );
+                  },
+                ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _stopImpersonation() async {
+    await Auth.setAdminImpersonation(null);
+    widget.onSessionChanged();
+    if (!mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Stopped viewing any account')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final viewingEmail = Auth.adminImpersonatingEmail;
+    final viewing = Auth.isAdminViewing;
+    final editMode = Auth.adminEditMode;
+
+    return RefreshIndicator(
+      onRefresh: _refreshUsers,
+      child: FutureBuilder<List<_UserSummary>>(
+        future: _usersFuture,
+        builder: (context, snapshot) {
+          final children = <Widget>[
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Admin tools',
+                        style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                    const SizedBox(height: 8),
+                    Text(viewing
+                        ? 'Currently viewing: $viewingEmail'
+                        : 'Not viewing any other account'),
+                    const SizedBox(height: 4),
+                    Text(editMode
+                        ? 'Change mode enabled - actions will modify this user.'
+                        : 'View-only mode - actions are read-only.'),
+                    const SizedBox(height: 12),
+                    SwitchListTile.adaptive(
+                      title: const Text('Enable change mode'),
+                      subtitle: const Text('Allow editing on behalf of the selected user'),
+                      value: editMode,
+                      onChanged: viewingEmail == null
+                          ? null
+                          : (v) {
+                              Auth.setAdminEditMode(v);
+                              widget.onSessionChanged();
+                              if (mounted) setState(() {});
+                            },
+                    ),
+                    const SizedBox(height: 8),
+                    FilledButton.tonalIcon(
+                      icon: const Icon(Icons.visibility_off_outlined),
+                      onPressed: viewingEmail == null ? null : _stopImpersonation,
+                      label: const Text('Stop viewing user'),
+                    ),
+                  ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: TextField(
+            decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.search),
+              labelText: 'Search users',
+              border: OutlineInputBorder(),
+            ),
+            onChanged: (value) {
+              setState(() => _search = value.trim().toLowerCase());
+            },
+          ),
+        ),
+        const SizedBox(height: 12),
+      ];
+
+      if (snapshot.connectionState == ConnectionState.waiting) {
+        children.add(const Center(child: CircularProgressIndicator()));
+      } else if (snapshot.hasError) {
+        children.add(Center(child: Text('Failed to load users: ${snapshot.error}')));
+      } else {
+        final list = snapshot.data ?? const [];
+        final query = _search;
+        final filtered = query.isEmpty
+            ? list
+            : list
+                .where((u) => u.email.toLowerCase().contains(query))
+                .toList();
+        if (filtered.isEmpty) {
+          children.add(const Center(child: Text('No registered users found.')));
+        } else {
+          children.addAll(filtered.map((u) {
+            final isActive = viewingEmail == u.email;
+            return Card(
+              child: ListTile(
+                leading: Icon(isActive ? Icons.visibility : Icons.person_outline),
+                    title: Text(u.email),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('Customer type: ${u.customerType}'),
+                        Text('Region: ${u.regionKey ?? 'Not set'}'),
+                      ],
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'View activity',
+                          icon: const Icon(Icons.list_alt),
+                          onPressed: () => _showActivity(u),
+                        ),
+                        const Icon(Icons.chevron_right),
+                      ],
+                    ),
+                    onTap: () => _impersonate(u.email),
+                  ),
+                );
+              }));
+            }
+          }
+
+          return ListView(
+            padding: const EdgeInsets.all(16),
+            children: children,
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _UserSummary {
+  final String email;
+  final String? regionKey;
+  final String customerType;
+  final String? userId;
+
+  _UserSummary({
+    required this.email,
+    required this.regionKey,
+    required this.customerType,
+    required this.userId,
+  });
+}
+
+/// =======================================================
 /// SETTINGS
 /// =======================================================
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key});
+  final VoidCallback? onQueryActivity;
+  const SettingsPage({super.key, this.onQueryActivity});
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -1842,10 +3631,18 @@ class _SettingsPageState extends State<SettingsPage> {
     final prefs = await SharedPreferences.getInstance();
     final updatedAt = prefs.getString('tariffs_updated_at');
 
+    String? resolvedKey = rk;
+    if (resolvedKey != null && regions.every((r) => r.regionKey != resolvedKey)) {
+      resolvedKey = null;
+    }
+    if (resolvedKey == null && regions.isNotEmpty) {
+      resolvedKey = regions.first.regionKey;
+    }
+
     setState(() {
       _regions = regions;
       _email = email;
-      _currentRegionKey = rk ?? (regions.isNotEmpty ? regions.first.regionKey : null);
+      _currentRegionKey = resolvedKey;
       _customerType = ct;
       if (updatedAt != null) {
         final date = DateTime.parse(updatedAt);
@@ -1854,15 +3651,75 @@ class _SettingsPageState extends State<SettingsPage> {
     });
   }
 
+  Future<void> _showCredentials() async {
+    final email = _email;
+    if (email == null) return;
+    final password = await Auth.storedPassword(email);
+    if (!mounted) return;
+    if (password == null || password.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No saved password found for this account.')),
+      );
+      return;
+    }
+    final controller = TextEditingController(text: password);
+    await showDialog<void>(
+      context: context,
+      builder: (_) {
+        bool obscure = true;
+        return StatefulBuilder(
+          builder: (ctx, setStateDialog) => AlertDialog(
+            title: const Text('Your login details'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SelectableText('Username: $email'),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: controller,
+                  readOnly: true,
+                  obscureText: obscure,
+                  enableInteractiveSelection: true,
+                  decoration: InputDecoration(
+                    labelText: 'Password',
+                    suffixIcon: IconButton(
+                      icon: Icon(obscure ? Icons.visibility_off : Icons.visibility),
+                      onPressed: () => setStateDialog(() => obscure = !obscure),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    controller.dispose();
+  }
+
   RegionTariff? _currentRegion() {
     if (_currentRegionKey == null || _regions.isEmpty) return null;
     final today = DateTime.now();
     return TariffManager.findRegionForDate(_regions, _currentRegionKey!, today)
-        ?? TariffManager.findRegion(_regions, _currentRegionKey!)
-        ?? _regions.first;
+        ?? TariffManager.findRegion(_regions, _currentRegionKey!);
   }
 
   Future<void> _saveRegion(String key) async {
+    if (!Auth.canModifyData) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Read-only mode. Enable change mode to modify settings.')),
+        );
+      }
+      return;
+    }
     if (_email != null) {
       await Auth.setRegion(_email!, key);
       setState(() => _currentRegionKey = key);
@@ -1875,7 +3732,15 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _checkTariffUpdate() async {
-    await TariffManager.tryAutoUpdate();
+    if (!Auth.canModifyData) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Read-only mode. Enable change mode to request updates.')),
+        );
+      }
+      return;
+    }
+    await TariffManager.tryAutoUpdate(force: true);
     await _init(); // refresh UI + last updated
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1885,13 +3750,48 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _resetTariffs() async {
-    await TariffManager.resetToBuiltins();
+    if (!Auth.canModifyData) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Read-only mode. Enable change mode to clear tariffs.')),
+        );
+      }
+      return;
+    }
+    await TariffManager.clearTariffs();
     await _init();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Tariffs reset to built-ins (Sep 2025)')),
+        const SnackBar(content: Text('Cached tariffs cleared.')),
       );
     }
+  }
+
+  Future<void> _refreshEverything() async {
+    await _init();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Data refreshed')),
+    );
+  }
+
+  void _showInclineInfo() {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Incline Blocks'),
+        content: const Text(
+          'Incline blocks are tiered electricity tariffs. Each month starts in block one with the cheapest rate. As usage climbs beyond thresholds, higher blocks activate and each kilowatt-hour there costs more. Recording every purchase keeps the running totals accurate.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _showPreviousFiveYears() async {
@@ -1916,16 +3816,32 @@ class _SettingsPageState extends State<SettingsPage> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (_) => SafeArea(
-        child: Padding(
+      useSafeArea: true,
+      enableDrag: true,
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.7,
+        minChildSize: 0.4,
+        maxChildSize: 0.95,
+        builder: (ctx, scrollController) => Padding(
           padding: const EdgeInsets.all(16),
           child: previous.isEmpty
-              ? const Text('No historical tariffs available for the last 5 years.',
-                  style: TextStyle(fontSize: 16))
+              ? ListView(
+                  controller: scrollController,
+                  children: const [
+                    Text(
+                      'No historical tariffs available for the last 5 years.',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                  ],
+                )
               : ListView(
+                  controller: scrollController,
                   children: [
-                    const Text('Previous 5 years — Incline Blocks',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                    const Text(
+                      'Previous 5 years - Incline Blocks',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                    ),
                     const SizedBox(height: 12),
                     ...previous.map((r) => Card(
                           child: Padding(
@@ -1942,7 +3858,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                 ),
                                 const SizedBox(height: 6),
                                 ...r.blocks.map((b) {
-                                  final range = b.to == null ? '${b.from}–' : '${b.from}–${b.to}';
+                                  final range = b.to == null ? '${b.from}-' : '${b.from}-${b.to}';
                                   return Text('$range: R${b.rate.toStringAsFixed(4)}/kWh');
                                 }),
                               ],
@@ -1968,6 +3884,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final canEdit = Auth.canModifyData;
     // Resolve a friendly region name without allowing edits here.
     String regionName;
     try {
@@ -1977,9 +3894,9 @@ class _SettingsPageState extends State<SettingsPage> {
           (_currentRegionKey == null
               ? null
               : TariffManager.findRegion(_regions, _currentRegionKey!));
-      regionName = r?.displayName ?? (_currentRegionKey ?? 'Unknown');
+      regionName = r?.displayName ?? (_currentRegionKey ?? 'No region selected');
     } catch (_) {
-      regionName = _currentRegionKey ?? 'Unknown';
+      regionName = _currentRegionKey ?? 'No region selected';
     }
 
     return ListView(
@@ -1994,6 +3911,57 @@ class _SettingsPageState extends State<SettingsPage> {
             subtitle: const Text('Set during sign in/registration'),
           ),
         ),
+        if (_email != null) ...[
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _showCredentials,
+            icon: const Icon(Icons.lock_outline),
+            label: const Text('View my username & password'),
+          ),
+        ],
+        OutlinedButton.icon(
+          onPressed: _refreshEverything,
+          icon: const Icon(Icons.refresh),
+          label: const Text('Refresh everything'),
+        ),
+        const SizedBox(height: 16),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: _showInclineInfo,
+            icon: Icon(Icons.info_outline, color: Theme.of(context).colorScheme.secondary),
+            label: const Text('What is an incline block?'),
+          ),
+        ),
+        const SizedBox(height: 16),
+        OutlinedButton.icon(
+          onPressed: () async {
+            final email = await Auth.activeEmail();
+            if (!mounted) return;
+            if (email == null) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Sign in to submit a query.')),
+              );
+              return;
+            }
+            await Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => QueryConversationPage(
+                  userEmail: email,
+                  isAdmin: Auth.isAdminActive && Auth.adminImpersonatingEmail != null,
+                  onUpdated: () {
+                    widget.onQueryActivity?.call();
+                    if (mounted) setState(() {});
+                  },
+                ),
+              ),
+            );
+            widget.onQueryActivity?.call();
+            if (mounted) setState(() {});
+          },
+          icon: const Icon(Icons.chat_bubble_outline),
+          label: const Text('Contact admin'),
+        ),
         const SizedBox(height: 16),
         const Text('Customer Type', style: TextStyle(fontWeight: FontWeight.w700)),
         const SizedBox(height: 8),
@@ -2003,27 +3971,29 @@ class _SettingsPageState extends State<SettingsPage> {
             DropdownMenuItem(value: 'residential', child: Text('Residential')),
             DropdownMenuItem(value: 'commercial', child: Text('Commercial')),
           ],
-          onChanged: (v) async {
-            if (v != null && _email != null) {
-              await Auth.setCustomerType(_email!, v);
-              // Reload regions for the selected customer type
-              final regions = await TariffManager.loadTariffsForType(v);
-              String? rk = _currentRegionKey;
-              if (regions.indexWhere((r) => r.regionKey == rk) < 0) {
-                rk = regions.isNotEmpty ? regions.first.regionKey : null;
-              }
-              setState(() {
-                _customerType = v;
-                _regions = regions;
-                _currentRegionKey = rk;
-              });
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Customer type saved')),
-                );
-              }
-            }
-          },
+          onChanged: canEdit
+              ? (v) async {
+                  if (v != null && _email != null) {
+                    await Auth.setCustomerType(_email!, v);
+                    // Reload regions for the selected customer type
+                    final regions = await TariffManager.loadTariffsForType(v);
+                    String? rk = _currentRegionKey;
+                    if (regions.indexWhere((r) => r.regionKey == rk) < 0) {
+                      rk = regions.isNotEmpty ? regions.first.regionKey : null;
+                    }
+                    setState(() {
+                      _customerType = v;
+                      _regions = regions;
+                      _currentRegionKey = rk;
+                    });
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Customer type saved')),
+                      );
+                    }
+                  }
+                }
+              : null,
           decoration: const InputDecoration(
             border: OutlineInputBorder(),
             labelText: 'Select Customer Type',
@@ -2031,11 +4001,23 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
         const SizedBox(height: 8),
         OutlinedButton.icon(
-          onPressed: _showPreviousFiveYears,
+          onPressed: _currentRegionKey == null ? null : _showPreviousFiveYears,
           icon: const Icon(Icons.history_toggle_off),
           label: const Text("View previous 5 years' tariffs"),
         ),
         const SizedBox(height: 16),
+        if (Auth.isAdminViewing && !canEdit) ...[
+          Card(
+            color: Colors.red.shade50,
+            child: const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text(
+                'You are viewing another user in read-only mode. Enable change mode from the Admin tab to make updates.',
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
         // Show effective dates and incline blocks for the current region
         if (_currentRegion() != null) ...[
           const Text('Incline Blocks', style: TextStyle(fontWeight: FontWeight.w700)),
@@ -2059,7 +4041,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     );
                   }),
                   ..._currentRegion()!.blocks.map((b) {
-                    final range = b.to == null ? '${b.from}–' : '${b.from}–${b.to}';
+                    final range = b.to == null ? '${b.from}-' : '${b.from}-${b.to}';
                     return Padding(
                       padding: const EdgeInsets.symmetric(vertical: 2),
                       child: Text('$range: R${b.rate.toStringAsFixed(4)}/kWh'),
@@ -2072,15 +4054,15 @@ class _SettingsPageState extends State<SettingsPage> {
         ],
         const SizedBox(height: 16),
         FilledButton.icon(
-          onPressed: _checkTariffUpdate,
+          onPressed: canEdit ? _checkTariffUpdate : null,
           icon: const Icon(Icons.system_update),
           label: const Text('Check tariff updates now'),
         ),
         const SizedBox(height: 8),
         OutlinedButton.icon(
-          onPressed: _resetTariffs,
+          onPressed: canEdit ? _resetTariffs : null,
           icon: const Icon(Icons.refresh),
-          label: const Text('Reset tariffs to built-ins (Sep 2025)'),
+          label: const Text('Clear cached tariffs'),
         ),
         if (_lastUpdated != null) ...[
           const SizedBox(height: 8),
@@ -2099,9 +4081,9 @@ class _SettingsPageState extends State<SettingsPage> {
             padding: EdgeInsets.all(12),
             child: Text(
               'Tips:\n'
-              '• Long-press a transaction to delete it.\n'
-              '• Long-press a month to delete its data.\n'
-              '• Monthly stats auto-reset when a new month starts (last 5 months kept).',
+              '- Delete entries by removing the month in the Monthly tab.\n'
+              '- Long-press a month to delete its data.\n'
+              '- Monthly stats auto-reset when a new month starts (last 5 months kept).',
             ),
           ),
         ),
@@ -2109,3 +4091,9 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 }
+
+
+
+
+
+
